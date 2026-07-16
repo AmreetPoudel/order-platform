@@ -181,8 +181,7 @@ docker exec -it redis redis-cli TTL posts:all
 docker compose ps
 ```
 
-## 7. Known architectural gaps (carry these into Phase 2/3 design, don't silently patch them in isolation)
-
+## 7. Known architectural gaps 
 These aren't bugs to reflexively fix — they're scope decisions the current
 code made for a local demo. Worth naming explicitly before building
 Terraform/k8s around this, because some get more expensive to fix once
@@ -224,22 +223,3 @@ you're on managed infra.
   Parameter Store, External Secrets Operator, or Sealed Secrets, depending
   on what you choose to standardize on).
 
-## 8. Roadmap (this repo, in order)
-
-- [x] **Phase 1 — Docker Compose** (this README): all 6 services on one
-      host, container-to-container networking, cache-aside + queue
-      patterns established.
-- [ ] **Phase 2 — Terraform on AWS**: Postgres -> RDS, Redis -> ElastiCache,
-      RabbitMQ -> SQS (requires a real client-library change in
-      `api/index.js` and `worker/index.js` — not just an env var swap).
-      EC2-based Docker deployment of `api`/`worker`/`frontend` first.
-- [ ] **Phase 3 — Kubernetes (kubeadm)**: each service becomes a
-      Deployment + Service. Fix the readiness-probe gap called out in
-      Section 7 here — this is the natural point to do it properly instead
-      of a container-level retry loop.
-- [ ] **Phase 4 — EKS + ArgoCD + CI/CD**: GitOps-managed manifests, managed
-      control plane, pipeline-driven deploys.
-
-Each phase should be a separate commit/branch with its own short
-architecture note, same pattern as this one — don't let the "why" get lost
-once the "how" (Terraform HCL, k8s YAML) takes over the repo.
