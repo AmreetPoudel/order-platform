@@ -181,8 +181,7 @@ docker exec -it redis redis-cli TTL posts:all
 docker compose ps
 ```
 
-## 7. Known architectural gaps (carry these into Phase 2/3 design, don't silently patch them in isolation)
-
+## 7. Known architectural gaps 
 These aren't bugs to reflexively fix — they're scope decisions the current
 code made for a local demo. Worth naming explicitly before building
 Terraform/k8s around this, because some get more expensive to fix once
