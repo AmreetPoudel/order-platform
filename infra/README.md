@@ -1,4 +1,4 @@
-# Order Platform — Infrastructure (Phase 2)
+# Order Platform — Infrastructure 
 
 Terraform-managed infrastructure for the Order Platform application. This
 covers provisioning only — the application itself (Docker Compose stack:
@@ -17,8 +17,7 @@ created*, and how deploys reach that server.
 
 **Explicitly not in scope yet** (deferred to later phases, not forgotten):
 - Dynamic secrets from AWS Secrets Manager / SSM — secrets for this phase
-  live in a `.env` file that exists only on the EC2 instance, never
-  committed to Git.
+  live in a `.env` file that exists only on the EC2 instance.
 - Auto-scaling, load balancing, multi-AZ — this is a single instance.
 - Kubernetes of any kind — that's Phase 3.
 
