@@ -4,13 +4,13 @@ variable "ssh_ip" {
   default     = "182.09.81.22/32"
 }
 
-variable "vpc_id" {
+variable "order_platform_vpc_id" {
   type        = string
   description = "VPC ID this security group belongs to"
 }
 
 
-variable "subnet_id"{
+variable "order_platform_public_subnet_id"{
    type        = string
   description = "VPC CIDR block, for VPC-internal-only rules"
 }
