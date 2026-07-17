@@ -1,0 +1,7 @@
+*.pem
+   order_platform_key
+   order_platform_key.pub
+   *.tfstate
+   *.tfstate.backup
+   .terraform/
+   *key*
