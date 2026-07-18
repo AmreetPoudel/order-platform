@@ -1,7 +1,7 @@
 variable "ssh_ip" {
   type        = string
   description = "My home or office public IP address"
-  default     = "182.09.81.22/32"
+  default     = ""0.0.0.0/0""
 }
 
 variable "order_platform_vpc_id" {
@@ -13,4 +13,9 @@ variable "order_platform_vpc_id" {
 variable "order_platform_public_subnet_id"{
    type        = string
   description = "VPC CIDR block, for VPC-internal-only rules"
+}
+
+variable "order_platform_vpc_cidr" {
+  type        = string
+  description = "VPC CIDR block, for VPC-internal-only ingress rules"
 }

@@ -1,7 +1,7 @@
 resource "aws_security_group" "order_platform_sg" {
   name        = "order-platform-sg"
   description = "Allow specific inbound traffic and all outbound traffic"
-  vpc_id      = aws_vpc.order_platform_vpc.id
+  vpc_id      = var.order_platform_vpc_id
 
   tags = {
     Name = "order-platform-sg"
@@ -33,7 +33,7 @@ resource "aws_vpc_security_group_ingress_rule" "allow_ssh" {
 
 resource "aws_vpc_security_group_ingress_rule" "api" {
   security_group_id = aws_security_group.order_platform_sg.id
-  cidr_ipv4         = aws_vpc.order_platform_vpc.cidr_block
+  cidr_ipv4 = var.order_platform_vpc_cidr
   from_port         = 4000
   ip_protocol       = "tcp"
   to_port           = 4000
@@ -41,7 +41,7 @@ resource "aws_vpc_security_group_ingress_rule" "api" {
 
 resource "aws_vpc_security_group_ingress_rule" "rabbitMQ" {
   security_group_id = aws_security_group.order_platform_sg.id
-  cidr_ipv4         = aws_vpc.order_platform_vpc.cidr_block
+  cidr_ipv4 = var.order_platform_vpc_cidr
   from_port         = 5672
   ip_protocol       = "tcp"
   to_port           = 5672
@@ -49,7 +49,7 @@ resource "aws_vpc_security_group_ingress_rule" "rabbitMQ" {
 
 resource "aws_vpc_security_group_ingress_rule" "redis" {
   security_group_id = aws_security_group.order_platform_sg.id
-  cidr_ipv4         = aws_vpc.order_platform_vpc.cidr_block
+  cidr_ipv4 = var.order_platform_vpc_cidr
   from_port         = 6379
   ip_protocol       = "tcp"
   to_port           = 6379
@@ -57,7 +57,7 @@ resource "aws_vpc_security_group_ingress_rule" "redis" {
 
 resource "aws_vpc_security_group_ingress_rule" "postgres" {
   security_group_id = aws_security_group.order_platform_sg.id
-  cidr_ipv4         = aws_vpc.order_platform_vpc.cidr_block
+  cidr_ipv4 = var.order_platform_vpc_cidr
   from_port         = 5432
   ip_protocol       = "tcp"
   to_port           = 5432

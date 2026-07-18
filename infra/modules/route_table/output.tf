@@ -1,3 +1,3 @@
-output "order_platform_rt"{
-    value= aws_internet_gateway.order_platform_gw.id
+output "order_platform_rt_id" {
+    value = aws_route_table.order_platform_route_table.id
 }
