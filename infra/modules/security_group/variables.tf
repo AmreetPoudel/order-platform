@@ -1,7 +1,7 @@
 variable "ssh_ip" {
   type        = string
   description = "My home or office public IP address"
-  default     = ""0.0.0.0/0""
+  default     = "0.0.0.0/0"
 }
 
 variable "order_platform_vpc_id" {
