@@ -53,3 +53,7 @@ resource "aws_eip_association" "order_platform_eip_assoc" {
   instance_id   = module.ec2.order_platform_instance_id
   allocation_id = module.elastic_ip.order_platform_eip_allocation_id
 }
+
+module "iam_role" {
+  source = "../../modules/iam_role"
+}
