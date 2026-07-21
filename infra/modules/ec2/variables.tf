@@ -27,3 +27,8 @@ variable "order_platform_environment" {
   type        = string
   description = "Deployment environment label passed to user_data"
 }
+
+variable "order_platform_instance_profile" {
+  type        = string
+  description = "IAM instance profile name attached to the EC2 instance for SSM access"
+}
