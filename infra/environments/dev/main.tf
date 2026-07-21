@@ -47,6 +47,7 @@ module "ec2" {
   order_platform_sg_ids         = [module.security_group.order_platform_sg_id]
   order_platform_key_name       = aws_key_pair.order_platform_key.key_name
   order_platform_environment    = "dev"
+  order_platform_instance_profile = module.iam_role.order_platform_instance_profile_name
 }
 
 resource "aws_eip_association" "order_platform_eip_assoc" {
