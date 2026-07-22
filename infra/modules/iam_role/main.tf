@@ -3,6 +3,7 @@ resource "aws_iam_role" "order_platform_ec2_role" {
 
   # Terraform's "jsonencode" function converts a
   # Terraform expression result to valid JSON syntax.
+  ## trust policy only ec2 can assume this role
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
