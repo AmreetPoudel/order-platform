@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: postsdb
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -27,17 +27,17 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: rabbitmq
     ports:
-      - "5672:5672"    # amqp port, used by api/worker
-      - "15672:15672"  # management UI - http://localhost:15672 (guest/guest)
+      - "5672:5672"
+      - "15672:15672"
 
   api:
-    build: ./backend
+    image: ${DOCKERHUB_USERNAME}/order-platform-api:${IMAGE_TAG}
     container_name: api
     environment:
       PGHOST: postgres
       PGPORT: 5432
       PGUSER: postgres
-      PGPASSWORD: postgres
+      PGPASSWORD: ${PG_PASSWORD}
       PGDATABASE: postsdb
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -53,13 +53,13 @@ services:
         condition: service_started
 
   worker:
-    build: ./worker
+    image: ${DOCKERHUB_USERNAME}/order-platform-worker:${IMAGE_TAG}
     container_name: worker
     environment:
       PGHOST: postgres
       PGPORT: 5432
       PGUSER: postgres
-      PGPASSWORD: postgres
+      PGPASSWORD: ${PG_PASSWORD}
       PGDATABASE: postsdb
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -73,10 +73,7 @@ services:
         condition: service_started
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_URL: http://localhost:4000
+    image: ${DOCKERHUB_USERNAME}/order-platform-frontend:${IMAGE_TAG}
     container_name: frontend
     ports:
       - "3000:80"
