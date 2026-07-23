@@ -7,6 +7,7 @@ module "vpc" {
   subnet_tag_name = "order_platform_subnet"
 }
 
+
 module "security_group" {
   source                  = "../../modules/security_group"
   order_platform_vpc_id   = module.vpc.order_platform_vpc_id
