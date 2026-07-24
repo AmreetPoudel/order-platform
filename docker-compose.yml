@@ -1,13 +1,27 @@
+# docker-compose.prod.yml
+# Production compose file for order-platform.
+# Uses pre-built images (pulled from Docker Hub), NOT `build:` context,
+# since building on the EC2 host wastes CPU/RAM and duplicates what CI already did.
+# All secrets (${PG_PASSWORD}, etc.) come from the shell environment,
+# populated by `source scripts/fetch_secrets.sh` (SSM-backed) before `docker compose up`.
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: postgres
+    restart: unless-stopped   # auto-restart on crash or EC2 reboot, but not if manually stopped
     environment:
       POSTGRES_DB: postsdb
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${PG_PASSWORD}
     ports:
-      - "5432:5432"
+      # 127.0.0.1 binds ONLY to localhost on the EC2 host itself.
+      # Not reachable from anywhere else on the network, even inside the VPC.
+      # Use this for manual debugging: SSH into EC2, then `psql -h 127.0.0.1 -U postgres`.
+      # api/worker do NOT use this port — they reach postgres via the internal
+      # Docker network, using the service name "postgres" as hostname, regardless
+      # of whether this port mapping exists at all.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -16,25 +30,61 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"   # cap each log file at 10MB
+        max-file: "3"     # keep at most 3 rotated files, then discard oldest
 
   redis:
     image: redis:7-alpine
     container_name: redis
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Same reasoning as postgres — localhost-only, for manual `redis-cli` debugging.
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: rabbitmq
+    restart: unless-stopped
+    environment:
+      # Real credentials now, not the "guest/guest" default.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      # AMQP port, localhost-only.
+      - "127.0.0.1:5672:5672"
+      # Management UI (http://127.0.0.1:15672) — only reachable via SSH tunnel
+      # from your laptop, e.g.: ssh -L 15672:127.0.0.1:15672 ubuntu@<EIP>
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
     image: ${DOCKERHUB_USERNAME}/order-platform-api:${IMAGE_TAG}
     container_name: api
+    restart: unless-stopped
     environment:
-      PGHOST: postgres
+      PGHOST: postgres        # resolved via Docker's internal DNS, not the host port above
       PGPORT: 5432
       PGUSER: postgres
       PGPASSWORD: ${PG_PASSWORD}
@@ -43,18 +93,25 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
     ports:
+      # This one IS public-facing on purpose — the frontend/browser needs to reach it.
       - "4000:4000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   worker:
     image: ${DOCKERHUB_USERNAME}/order-platform-worker:${IMAGE_TAG}
     container_name: worker
+    restart: unless-stopped
     environment:
       PGHOST: postgres
       PGPORT: 5432
@@ -64,21 +121,34 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
+    # No ports: this service has no HTTP server, it only consumes from RabbitMQ.
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     image: ${DOCKERHUB_USERNAME}/order-platform-frontend:${IMAGE_TAG}
     container_name: frontend
+    restart: unless-stopped
     ports:
+      # Public-facing — this is what users actually load in their browser.
       - "3000:80"
     depends_on:
       - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:
