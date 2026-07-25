@@ -40,9 +40,8 @@ jobs:
             echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
             export IMAGE_TAG=${{ github.sha }}
-            docker-compose -f docker-compose.yml pull
-            docker-compose -f docker-compose.yml up -d
-
+            docker compose -f docker-compose.yml pull
+            docker compose -f docker-compose.yml up -d
 
             echo "Waiting for API to become healthy..."
             for i in $(seq 1 15); do
