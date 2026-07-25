@@ -57,7 +57,7 @@ jobs:
 
       # Step 6: Scan the built image for OS-level and dependency CVEs.
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: order-platform-api:scan
           format: table
@@ -105,7 +105,7 @@ jobs:
           tags: order-platform-worker:scan
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: order-platform-worker:scan
           format: table
@@ -154,7 +154,7 @@ jobs:
             VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: order-platform-frontend:scan
           format: table
