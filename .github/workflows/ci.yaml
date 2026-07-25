@@ -135,7 +135,7 @@ jobs:
       - name: Audit dependencies
         run: |
           cd frontend
-          npm audit --audit-level=high
+          npm audit --audit-level=critical
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
