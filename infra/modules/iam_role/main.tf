@@ -37,6 +37,27 @@ resource "aws_iam_role_policy" "order_platform_ssm_read" {
   })
 }
 
+
+resource "aws_iam_role_policy" "order_platform_deploy_state" {
+  name = "order_platform_deploy_state"
+  role = aws_iam_role.order_platform_ec2_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "arn:aws:s3:::order-platform-tf-state-891274465984/deploy/dev/versions.json"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParametersByPath"]
+        Resource = "arn:aws:ssm:ap-south-1:*:parameter/order-platform/*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "order_platform_profile" {
   name = "order_platform_ec2_profile"
   role = aws_iam_role.order_platform_ec2_role.name
