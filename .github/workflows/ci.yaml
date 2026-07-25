@@ -5,6 +5,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  scan-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, not just latest commit — catches secrets committed and later "removed"
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
 
   # ===================== BACKEND =====================
   build-backend:
@@ -27,7 +36,23 @@ jobs:
 
       # Step 3: Build the image from backend/Dockerfile, tag it with the
       # commit SHA, and push it to Docker Hub.
-      - name: Build and push backend image
+      - name: Build image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: order-platform-api:scan
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-api:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0   # report only — doesn't fail the build yet
+
+      - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -48,7 +73,147 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push worker image
+      - name: Build image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: false
+          load: true
+          tags: order-platform-worker:scan
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-worker:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0   # report only — doesn't fail the build yet
+
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-worker:${{ github.sha }}
+
+  # ===================== FRONTEND =====================
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:name: CI - Build and Push Images
+
+# Manual trigger only — click "Run workflow" in the GitHub Actions tab.
+on:
+  workflow_dispatch:
+
+jobs:
+  scan-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, not just latest commit — catches secrets committed and later "removed"
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+
+  # ===================== BACKEND =====================
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+
+      # Step 1: Pull your repo's code onto this runner.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Install Node on the runner itself (separate from Docker) so
+      # `npm audit` can run directly against package-lock.json.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Step 3: Check known dependency vulnerabilities BEFORE spending time
+      # building an image from them. Fails the job if HIGH/CRITICAL found.
+      - name: Audit dependencies
+        run: |
+          cd backend
+          npm audit --audit-level=high
+
+      # Step 4: Log in to Docker Hub, so the push later is authorized.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 5: Build the image, but don't push yet — load it locally so
+      # Trivy can scan it first.
+      - name: Build image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: order-platform-api:scan
+
+      # Step 6: Scan the built image for OS-level and dependency CVEs.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-api:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0   # report only — doesn't fail the build yet
+
+      # Step 7: Only now, after audit + scan, push the real tagged image.
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-api:${{ github.sha }}
+
+  # ===================== WORKER =====================
+  build-worker:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit dependencies
+        run: |
+          cd worker
+          npm audit --audit-level=high
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image (no push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: false
+          load: true
+          tags: order-platform-worker:scan
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-worker:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0
+
+      - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: ./worker
@@ -63,6 +228,75 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit dependencies
+        run: |
+          cd frontend
+          npm audit --audit-level=high
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          load: true
+          tags: order-platform-frontend:scan
+          build-args: |
+            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-frontend:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0
+
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
+
+  notify-discord:
+    runs-on: ubuntu-latest
+    needs: [scan-secrets, build-backend, build-worker, build-frontend]
+    if: always()
+    steps:
+      - name: Send Discord notification
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ]; then
+            STATUS="FAILED"
+            COLOR=15158332
+          else
+            STATUS="SUCCESS"
+            COLOR=3066993
+          fi
+
+          curl -H "Content-Type: application/json" -X POST \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"CI Pipeline: $STATUS\",
+                \"description\": \"Commit: ${{ github.sha }}\nBranch: ${{ github.ref_name }}\nTriggered by: ${{ github.actor }}\nView run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"color\": $COLOR
+              }]
+            }" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -71,11 +305,52 @@ jobs:
 
       # Frontend needs one extra thing: build-args, so Vite bakes the
       # correct API URL into the compiled JS at build time.
-      - name: Build and push frontend image
+      - name: Build image frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          load: true
+          tags: order-platform-frontend:scan
+          build-args: |
+            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: order-platform-frontend:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 0   # report only — doesn't fail the build yet
+
+      - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
-          build-args: |
-            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
+
+  notify-discord:
+      runs-on: ubuntu-latest
+      needs: [scan-secrets, build-backend, build-worker, build-frontend]
+      if: always()
+      steps:
+        - name: Send Discord notification
+          run: |
+            if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ]; then
+              STATUS="❌ FAILED"
+              COLOR=15158332
+            else
+              STATUS="✅ SUCCESS"
+              COLOR=3066993
+            fi
+
+            curl -H "Content-Type: application/json" -X POST \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"CI Pipeline: $STATUS\",
+                  \"description\": \"Commit: ${{ github.sha }}\nBranch: ${{ github.ref_name }}\nTriggered by: ${{ github.actor }}\nView run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                  \"color\": $COLOR
+                }]
+              }" \
+              "${{ secrets.DISCORD_WEBHOOK_URL }}"
