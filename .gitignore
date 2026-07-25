@@ -5,3 +5,4 @@ order_platform_key.pub
 *.tfstate.backup
 .terraform/
 *key*
+node_modules/
