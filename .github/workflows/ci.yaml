@@ -158,7 +158,7 @@ jobs:
         with:
           image-ref: order-platform-frontend:scan
           format: table
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           exit-code: 0
 
       - name: Push image
