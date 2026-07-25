@@ -92,6 +92,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
     ports:
       # This one IS public-facing on purpose — the frontend/browser needs to reach it.
       - "4000:4000"
@@ -121,6 +123,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
     # No ports: this service has no HTTP server, it only consumes from RabbitMQ.
     depends_on:
       postgres:

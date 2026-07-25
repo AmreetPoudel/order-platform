@@ -30,8 +30,7 @@ redisClient.on("error", (err) => console.error("Redis error:", err));
 // --- RabbitMQ connection (queue producer) ---
 let channel;
 async function connectQueue() {
-  const rabbitUrl = `amqp://${process.env.RABBITMQ_HOST || "rabbitmq"}:5672`;
-  // retry loop - rabbitmq container may take a few seconds to be ready
+  const rabbitUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASSWORD}@${process.env.RABBITMQ_HOST || "rabbitmq"}:5672`;  // retry loop - rabbitmq container may take a few seconds to be ready
   for (let i = 0; i < 10; i++) {
     try {
       const conn = await amqp.connect(rabbitUrl);

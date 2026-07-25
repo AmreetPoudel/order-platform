@@ -18,8 +18,7 @@ const redisClient = createClient({
 redisClient.on("error", (err) => console.error("Redis error:", err));
 
 async function connectQueue() {
-  const rabbitUrl = `amqp://${process.env.RABBITMQ_HOST || "rabbitmq"}:5672`;
-  for (let i = 0; i < 10; i++) {
+    const rabbitUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASSWORD}@${process.env.RABBITMQ_HOST || "rabbitmq"}:5672`;  for (let i = 0; i < 10; i++) {
     try {
       const conn = await amqp.connect(rabbitUrl);
       const channel = await conn.createChannel();
