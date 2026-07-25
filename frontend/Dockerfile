@@ -14,9 +14,10 @@ RUN npm install
 COPY . .
 # API URL baked in at build time - points to the api container via the
 # browser, so use localhost since the browser runs on the host machine
-ARG VITE_API_URL=http://localhost:4000
+ARG VITE_API_URL
 # arg is build time variable, it is not available at runtime, so we need to set it as an environment variable in the container.
-#we can get arg from this dockerfile or CI .
+#we can get arg from this dockerfile or CI . here check CI there is a step where we set the arg VITE_API_URL to the value 
+#of the environment variable VITE_API_URL, which is set in the CI workflow.
 ENV VITE_API_URL=$VITE_API_URL
 # vite api url is set as an environment variable in the container, so we can access it in the frontend code using 
 #import.meta.env.VITE_API_URL  
