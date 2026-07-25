@@ -1,0 +1,81 @@
+name: CI - Build and Push Images
+
+# Manual trigger only — click "Run workflow" in the GitHub Actions tab.
+on:
+  workflow_dispatch:
+
+jobs:
+
+  # ===================== BACKEND =====================
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+
+      # Step 1: Pull your repo's code onto this runner, at the exact commit
+      # that's currently on your branch. Without this, the runner has no
+      # files at all — no Dockerfile, no source code, nothing.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Log in to Docker Hub, so the push in Step 3 is authorized.
+      # Uses your access token .
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 3: Build the image from backend/Dockerfile, tag it with the
+      # commit SHA, and push it to Docker Hub.
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-api:${{ github.sha }}
+
+  # ===================== WORKER =====================
+  build-worker:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-worker:${{ github.sha }}
+
+  # ===================== FRONTEND =====================
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Frontend needs one extra thing: build-args, so Vite bakes the
+      # correct API URL into the compiled JS at build time.
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
+          build-args: |
+            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
