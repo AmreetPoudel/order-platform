@@ -1,0 +1,54 @@
+name: CD - Deploy to EC2 (dev)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout only what CD needs
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docker-compose.prod.yml
+            scripts/dev
+          sparse-checkout-cone-mode: false
+
+      - name: Copy deploy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ vars.EC2_PUBLIC_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          source: "docker-compose.prod.yml,scripts/dev/rollback.sh,scripts/dev/update-version.sh,scripts/dev/fetch_secrets.sh"
+          target: "/home/ubuntu/order-platform"
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.EC2_PUBLIC_IP }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            cd /home/ubuntu/order-platform
+            chmod +x scripts/dev/*.sh
+
+            source scripts/dev/fetch_secrets.sh
+
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+            export IMAGE_TAG=${{ github.sha }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+
+            sleep 10
+            if curl -f http://localhost:4000/health; then
+              bash scripts/dev/update-version.sh "$IMAGE_TAG"
+              echo "Deploy succeeded and verified."
+            else
+              echo "Health check failed. versions.json NOT updated."
+              echo "Run manually if needed: bash scripts/dev/rollback.sh"
+              exit 1
+            fi
