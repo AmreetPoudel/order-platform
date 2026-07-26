@@ -52,3 +52,17 @@ resource "aws_iam_role_policy" "github_actions_ssm" {
     }]
   })
 }
+
+resource "aws_iam_role_policy" "github_actions_s3_deploy" {
+  name = "order_platform_github_s3_deploy"
+  role = aws_iam_role.github_actions_cd.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject"]
+      Resource = "arn:aws:s3:::order-platform-tf-state-891274465984/deploy/dev/artifacts/*"
+    }]
+  })
+}

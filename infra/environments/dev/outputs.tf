@@ -6,3 +6,7 @@ output "order_platform_ec2_public_ip" {
 output "github_actions_role_arn" {
   value = module.oidc.github_actions_role_arn
 }
+# environments/dev/outputs.tf
+output "ec2_instance_id" {
+  value = module.ec2.order_platform_instance_id
+}
