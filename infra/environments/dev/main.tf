@@ -68,3 +68,7 @@ resource "aws_eip_association" "order_platform_eip_assoc" {
 module "iam_role" {
   source = "../../modules/iam_role"
 }
+
+module "oidc" {
+  source = "../../modules/oidc"
+}
