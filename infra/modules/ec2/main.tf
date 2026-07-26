@@ -5,7 +5,7 @@ resource "aws_instance" "order_platform_ec2" {
   vpc_security_group_ids = var.order_platform_sg_ids
   key_name               = var.order_platform_key_name
 
-  associate_public_ip_address = false
+  associate_public_ip_address = true
   iam_instance_profile = var.order_platform_instance_profile
 
   user_data = templatefile("${path.module}/scripts/user_data.sh.tpl", {
