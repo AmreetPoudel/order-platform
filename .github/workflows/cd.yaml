@@ -22,6 +22,11 @@ jobs:
       # This is the OIDC handshake — GitHub generates a fresh token, presents
       # it to AWS, AWS checks it against the trust policy we built, and
       # returns temporary credentials valid for this job only.
+      - name: Debug - decode OIDC token
+        run: |
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
