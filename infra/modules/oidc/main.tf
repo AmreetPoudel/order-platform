@@ -31,7 +31,10 @@ resource "aws_iam_role" "github_actions_cd" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AmreetPoudel/order-platform:*"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:AmreetPoudel/order-platform:*",
+            "repo:AmreetPoudel@*/order-platform@*:*"
+          ]
         }
       }
     }]
