@@ -62,3 +62,21 @@ resource "aws_iam_instance_profile" "order_platform_profile" {
   name = "order_platform_ec2_profile"
   role = aws_iam_role.order_platform_ec2_role.name
 }
+
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
+  role       = aws_iam_role.order_platform_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+resource "aws_iam_role_policy" "order_platform_s3_artifacts_read" {
+  name = "order_platform_s3_artifacts_read"
+  role = aws_iam_role.order_platform_ec2_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "arn:aws:s3:::order-platform-tf-state-891274465984/deploy/dev/artifacts/*"
+    }]
+  })
+}

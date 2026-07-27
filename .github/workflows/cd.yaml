@@ -40,6 +40,7 @@ jobs:
           aws s3 cp scripts/dev/rollback.sh s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/rollback.sh
           aws s3 cp scripts/dev/update-version.sh s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/update-version.sh
           aws s3 cp scripts/dev/fetch_secrets.sh s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/fetch_secrets.sh
+          aws s3 cp scripts/dev/deploy.sh s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/deploy.sh
 
       # This is the actual replacement for SSH: no connection is opened.
       # We hand AWS a shell script; AWS relays it to the instance's SSM
@@ -52,15 +53,7 @@ jobs:
             --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
             --comment "CD deploy ${{ github.sha }}" \
-            --parameters commands="[
-              'mkdir -p /home/ubuntu/order-platform/scripts/dev',
-              'aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/docker-compose.yml /home/ubuntu/order-platform/docker-compose.yml',
-              'aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/rollback.sh /home/ubuntu/order-platform/scripts/dev/rollback.sh',
-              'aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/update-version.sh /home/ubuntu/order-platform/scripts/dev/update-version.sh',
-              'aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/fetch_secrets.sh /home/ubuntu/order-platform/scripts/dev/fetch_secrets.sh',
-              'chmod +x /home/ubuntu/order-platform/scripts/dev/*.sh',
-              'cd /home/ubuntu/order-platform && source scripts/dev/fetch_secrets.sh && echo $DOCKERHUB_TOKEN | docker login -u $DOCKERHUB_USERNAME --password-stdin && export IMAGE_TAG=${{ github.sha }} && docker compose -f docker-compose.yml pull && docker compose -f docker-compose.yml up -d && for i in $(seq 1 15); do curl -f -s http://localhost:4000/health > /dev/null && echo HEALTHY && bash scripts/dev/update-version.sh ${{ github.sha }} && exit 0; sleep 3; done; echo UNHEALTHY && exit 1'
-            ]" \
+            --parameters '{"commands":["mkdir -p /home/ubuntu/order-platform/scripts/dev","aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/docker-compose.yml /home/ubuntu/order-platform/docker-compose.yml","aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/rollback.sh /home/ubuntu/order-platform/scripts/dev/rollback.sh","aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/update-version.sh /home/ubuntu/order-platform/scripts/dev/update-version.sh","aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/fetch_secrets.sh /home/ubuntu/order-platform/scripts/dev/fetch_secrets.sh","aws s3 cp s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/deploy.sh /home/ubuntu/order-platform/scripts/dev/deploy.sh","chmod +x /home/ubuntu/order-platform/scripts/dev/*.sh","bash /home/ubuntu/order-platform/scripts/dev/deploy.sh '"${{ github.sha }}"'"]}' \
             --region ap-south-1 \
             --query "Command.CommandId" \
             --output text)
