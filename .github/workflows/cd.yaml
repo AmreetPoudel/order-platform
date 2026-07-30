@@ -19,6 +19,9 @@ jobs:
             scripts/dev
           sparse-checkout-cone-mode: false
 
+      - name: Debug check
+        run: echo "ROLE ARN IS -> ${{ vars.AWS_ROLE_ARN }}"
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
