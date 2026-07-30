@@ -39,9 +39,9 @@ resource "aws_iam_role" "github_actions_cd" {
           # NOT "repo:owner/repo:*" -- that would also allow
           # pull_request-triggered runs (including from forks) to assume it.
           "token.actions.githubusercontent.com:sub" = [
-            "repo:AmreetPoudel/order-platform:ref:refs/heads/main",
-            "repo:AmreetPoudel/order-platform:ref:refs/heads/dev",
-            "repo:AmreetPoudel/order-platform:ref:refs/heads/oidc"
+              "repo:AmreetPoudel@59461560/order-platform@1301498661:ref:refs/heads/main",
+              "repo:AmreetPoudel@59461560/order-platform@1301498661:ref:refs/heads/dev",
+              "repo:AmreetPoudel@59461560/order-platform@1301498661:ref:refs/heads/oidc"
           ]
         }
       }
