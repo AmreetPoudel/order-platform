@@ -11,22 +11,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout only what CD needs
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            docker-compose.yml
-            scripts/dev
-          sparse-checkout-cone-mode: false
-
-      - name: Debug check
-        run: echo "ROLE ARN IS -> ${{ vars.AWS_ROLE_ARN }}"
-      - name: Print OIDC claims for debugging
-        run: |
-          curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | \
-            jq -r '.value' | cut -d. -f2 | base64 -d 2>/dev/null | jq .
-
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -36,40 +20,27 @@ jobs:
       - name: Sanity check auth
         run: aws sts get-caller-identity
 
-      - name: Upload deploy files to S3
-        run: |
-          aws s3 cp docker-compose.yml \
-            s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/docker-compose.yml
-          aws s3 cp scripts/dev/rollback.sh \
-            s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/scripts/dev/rollback.sh
-          aws s3 cp scripts/dev/update-version.sh \
-            s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/scripts/dev/update-version.sh
-          aws s3 cp scripts/dev/fetch_secrets.sh \
-            s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/scripts/dev/fetch_secrets.sh
-
       - name: Deploy via SSM
         run: |
           IMAGE_TAG=${{ github.sha }}
+          BUCKET=order-platform-tf-state-891274465984
+
+          cat > params.json << EOF
+          {
+            "commands": [
+              "mkdir -p /home/ubuntu/order-platform",
+              "aws s3 sync s3://${BUCKET}/deploy/dev/artifacts/ /home/ubuntu/order-platform/",
+              "chmod +x /home/ubuntu/order-platform/scripts/dev/deploy.sh",
+              "bash /home/ubuntu/order-platform/scripts/dev/deploy.sh ${IMAGE_TAG}"
+            ]
+          }
+          EOF
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
             --comment "CD deploy $IMAGE_TAG" \
-            --parameters "commands=[
-              'set -euo pipefail',
-              'mkdir -p /home/ubuntu/order-platform/scripts/dev',
-              'aws s3 sync s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/ /home/ubuntu/order-platform/',
-              'cd /home/ubuntu/order-platform',
-              'chmod +x scripts/dev/*.sh',
-              'source scripts/dev/fetch_secrets.sh',
-              'echo \"$DOCKERHUB_TOKEN\" | docker login -u \"$DOCKERHUB_USERNAME\" --password-stdin',
-              'export IMAGE_TAG='$IMAGE_TAG'',
-              'docker compose -f docker-compose.yml pull',
-              'docker compose -f docker-compose.yml up -d',
-              'for i in $(seq 1 15); do if curl -f -s http://localhost:4000/health > /dev/null; then echo Health check passed; HEALTHY=true; break; fi; echo retry $i; sleep 3; done',
-              'if [ \"${HEALTHY:-false}\" != \"true\" ]; then echo Health check failed; exit 1; fi',
-              'bash scripts/dev/update-version.sh '$IMAGE_TAG''
-            ]" \
+            --parameters file://params.json \
             --query "Command.CommandId" \
             --output text)
 
