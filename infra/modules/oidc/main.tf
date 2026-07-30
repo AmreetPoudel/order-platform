@@ -1,20 +1,24 @@
+# ============================================================
+# OIDC Identity Provider - tells AWS to trust GitHub's tokens
+# who issues        = url
+# who receives it   = client_id_list
+# how AWS verifies  = thumbprint_list (GitHub's cert fingerprint)
+# ============================================================
 resource "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 
   client_id_list = [
     "sts.amazonaws.com"
   ]
-### a certificate fingerprint AWS uses to verify it's really talking to GitHub's genuine token service 
+
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1"
   ]
 }
 
-
-### simple who issues =url.  to whom = client_id_list is_client_github_fingerprint_verify=thumbprint_list
-
-
-
+# ============================================================
+# IAM Role - who is allowed to assume it (repo + branch scoped)
+# ============================================================
 resource "aws_iam_role" "github_actions_cd" {
   name = "order_platform_github_actions_cd"
 
@@ -31,9 +35,13 @@ resource "aws_iam_role" "github_actions_cd" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
+          # Only main and dev branches can assume this role.
+          # NOT "repo:owner/repo:*" -- that would also allow
+          # pull_request-triggered runs (including from forks) to assume it.
           "token.actions.githubusercontent.com:sub" = [
-            "repo:AmreetPoudel/order-platform:*",
-            "repo:AmreetPoudel@*/order-platform@*:*"
+            "repo:AmreetPoudel/order-platform:ref:refs/heads/main",
+            "repo:AmreetPoudel/order-platform:ref:refs/heads/dev",
+            "repo:AmreetPoudel/order-platform:ref:refs/heads/oidc"
           ]
         }
       }
@@ -41,7 +49,9 @@ resource "aws_iam_role" "github_actions_cd" {
   })
 }
 
-
+# ============================================================
+# Permission Policy - what the assumed role can do (SSM)
+# ============================================================
 resource "aws_iam_role_policy" "github_actions_ssm" {
   name = "order_platform_github_ssm_send_command"
   role = aws_iam_role.github_actions_cd.id
@@ -56,6 +66,9 @@ resource "aws_iam_role_policy" "github_actions_ssm" {
   })
 }
 
+# ============================================================
+# Permission Policy - what the assumed role can do (S3 upload)
+# ============================================================
 resource "aws_iam_role_policy" "github_actions_s3_deploy" {
   name = "order_platform_github_s3_deploy"
   role = aws_iam_role.github_actions_cd.id
