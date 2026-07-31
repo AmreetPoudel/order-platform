@@ -65,7 +65,7 @@ resource "aws_iam_instance_profile" "order_platform_profile" {
 
 resource "aws_iam_role_policy" "ec2_s3_deploy_read" {
   name = "order_platform_ec2_s3_deploy_read"
-  role = aws_iam_role.ec2_instance_role.id   # use your actual EC2 role resource name here
+  role = aws_iam_role.order_platform_ec2_role.id  
 
   policy = jsonencode({
     Version = "2012-10-17"
