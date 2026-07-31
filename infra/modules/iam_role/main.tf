@@ -63,20 +63,19 @@ resource "aws_iam_instance_profile" "order_platform_profile" {
   role = aws_iam_role.order_platform_ec2_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
-  role       = aws_iam_role.order_platform_ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-resource "aws_iam_role_policy" "order_platform_s3_artifacts_read" {
-  name = "order_platform_s3_artifacts_read"
-  role = aws_iam_role.order_platform_ec2_role.id
+resource "aws_iam_role_policy" "ec2_s3_deploy_read" {
+  name = "order_platform_ec2_s3_deploy_read"
+  role = aws_iam_role.ec2_instance_role.id   # use your actual EC2 role resource name here
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["s3:GetObject"]
-      Resource = "arn:aws:s3:::order-platform-tf-state-891274465984/deploy/dev/artifacts/*"
+      Action   = ["s3:GetObject", "s3:ListBucket"]
+      Resource = [
+        "arn:aws:s3:::order-platform-tf-state-891274465984",
+        "arn:aws:s3:::order-platform-tf-state-891274465984/deploy/dev/artifacts/*"
+      ]
     }]
   })
 }
