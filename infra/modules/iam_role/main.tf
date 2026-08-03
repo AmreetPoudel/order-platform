@@ -79,3 +79,8 @@ resource "aws_iam_role_policy" "ec2_s3_deploy_read" {
     }]
   })
 }
+
+resource "aws_iam_role_policy_attachment" "order_platform_ssm_core" {
+  role       = aws_iam_role.order_platform_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}

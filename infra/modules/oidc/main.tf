@@ -58,11 +58,42 @@ resource "aws_iam_role_policy" "github_actions_ssm" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["ssm:SendCommand", "ssm:GetCommandInvocation"]
-      Resource = "*"
-    }]
+       Statement = [
+      {
+        Sid    = "SSMInstanceVisibility"
+        Effect = "Allow"
+        Action = [
+          "ssm:DescribeInstanceInformation"
+        ]
+        # DescribeInstanceInformation does not support resource-level
+        # restriction to a specific instance ARN -- it must be "*".
+        # This is an AWS API limitation, not an over-broad grant on
+        # your part; scope is enforced by the filter you already pass
+        # in the CLI call (--filters Key=InstanceIds,Values=...), not
+        # by IAM.
+        Resource = "*"
+      },
+      {
+        Sid    = "SSMSendAndReadCommands"
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation",
+          "ssm:ListCommandInvocations"
+        ]
+        Resource = [
+          "arn:aws:ec2:ap-south-1:891274465984:instance/${var.ec2_instance_id}",
+          "arn:aws:ssm:ap-south-1::document/AWS-RunShellScript",
+          "arn:aws:ssm:ap-south-1:891274465984:*"
+          # get-command-invocation / list-command-invocations act on the
+          # command itself (identified by CommandId), which SSM models
+          # as an ssm:* resource, not the instance ARN. Scoping this
+          # tightly to a specific command ARN isn't practical since the
+          # CommandId doesn't exist until send-command runs -- this is
+          # the standard AWS-documented pattern for this action.
+        ]
+      }
+    ]
   })
 }
 
