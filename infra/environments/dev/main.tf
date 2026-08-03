@@ -71,4 +71,5 @@ module "iam_role" {
 
 module "oidc" {
   source = "../../modules/oidc"
+  ec2_instance_id = module.ec2.order_platform_instance_id
 }
