@@ -13,3 +13,7 @@ aws s3 cp scripts/dev/fetch_secrets.sh \
 
 aws s3 cp scripts/dev/deploy.sh \
   s3://order-platform-tf-state-891274465984/deploy/dev/artifacts/scripts/dev/deploy.sh
+
+
+
+  

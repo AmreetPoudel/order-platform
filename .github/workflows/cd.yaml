@@ -1,164 +1,223 @@
 name: CD - Deploy to EC2 (dev) via OIDC + SSM
 
-# This workflow does NOT use SSH, no port 22, no static AWS keys.
-# Instead: GitHub proves its identity to AWS at runtime (OIDC),
-# gets temporary credentials, and tells AWS SSM to run a script
-# on the EC2 instance. The EC2 instance pulls the command from
-# AWS itself (outbound poll) -- nobody ever connects INTO the instance.
+# ============================================================================
+# HOW THIS WORKS (high level)
+# ============================================================================
+# 1. GitHub mints a short-lived OIDC token proving "this run is repo X,
+#    branch Y." No stored AWS keys anywhere in this repo.
+# 2. AWS STS trades that token for temporary credentials, based on the
+#    trust policy on the IAM role (role-to-assume below).
+# 3. We use those temp credentials to call AWS SSM send-command, which
+#    queues a shell script to run ON the EC2 instance.
+# 4. The SSM Agent on EC2 polls AWS OUTBOUND for queued commands, runs
+#    them locally, and reports results back to AWS. No inbound port
+#    (no port 22, no SSH) needs to be open on the instance.
+# 5. We poll AWS for the result and print stdout/stderr from the
+#    instance back into this GitHub Actions log.
+# ============================================================================
 
 on:
   workflow_dispatch:
 
 permissions:
   id-token: write
-  # CRITICAL LINE. Without this, GitHub will NOT generate an OIDC token
-  # for this job, and the "Configure AWS credentials" step below will fail
-  # immediately with "Credentials could not be loaded."
-  # This permission is what allows GitHub to mint a short-lived signed
-  # token proving "this run really is from repo X, branch Y."
+  # Required for GitHub to mint an OIDC token for this job. Without this,
+  # "Configure AWS credentials" fails immediately with
+  # "Credentials could not be loaded."
   contents: read
-  # Standard permission so actions/checkout can read repo content.
-  # Not strictly required in this version since we don't checkout code here,
-  # but harmless to leave in.
+  # Lets actions/checkout read repo content if ever added later.
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
 
-      # ============================================================
-      # STEP 1: Authenticate to AWS WITHOUT any stored password/key.
-      # ============================================================
-      # What happens under the hood:
-      #   1. GitHub generates a signed JSON token (JWT) proving this
-      #      exact repo + branch is who it says it is.
-      #   2. That token is sent to AWS STS (Security Token Service).
-      #   3. AWS checks the token against the IAM Role's "trust policy"
-      #      (the one you wrote in Terraform, with the `sub` condition).
-      #   4. If it matches, AWS hands back TEMPORARY credentials
-      #      (access key + secret key + session token), valid ~1 hour.
-      # After this step, every following step in this job automatically
-      # has AWS credentials available as environment variables --
-      # you don't need to pass them manually.
+      # ------------------------------------------------------------------
+      # STEP 1: Authenticate to AWS via OIDC (no stored keys/secrets)
+      # ------------------------------------------------------------------
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          # This ARN points to the IAM Role created in Terraform
-          # (aws_iam_role.github_actions_cd). It's stored as a GitHub
-          # repo VARIABLE (not secret) since the ARN alone can't be used
-          # to authenticate anything without the OIDC trust relationship.
           aws-region: ap-south-1
-          # Which AWS region to talk to. Must match where your
-          # EC2 instance / SSM / S3 bucket actually live.
 
-      # ============================================================
-      # STEP 2: Sanity check -- confirm the auth actually worked.
-      # ============================================================
-      # This just asks AWS "who am I right now?" If step 1 succeeded,
-      # this prints back the assumed role's ARN and a temporary session ID.
-      # Useful for debugging: if THIS step fails, the problem is 100%
-      # in OIDC/IAM trust policy, not in your deploy script.
+      # ------------------------------------------------------------------
+      # STEP 2: Confirm the OIDC auth actually worked, print who we are.
+      # If THIS step fails, the problem is in OIDC/IAM trust policy,
+      # not in anything below it.
+      # ------------------------------------------------------------------
       - name: Sanity check auth
-        run: aws sts get-caller-identity
-
-      # ============================================================
-      # STEP 3: Tell EC2 (via SSM) to deploy the new version.
-      # ============================================================
-      # Important: nothing here connects directly to EC2. Instead:
-      #   - We build a small JSON file listing shell commands to run.
-      #   - We call `aws ssm send-command`, which drops those commands
-      #     into a queue that AWS manages.
-      #   - The SSM Agent already running on your EC2 instance is
-      #     continuously polling AWS OUTBOUND (instance -> AWS, not the
-      #     other way around). It picks up the command, runs it locally,
-      #     and reports the result back to AWS.
-      #   - We then poll AWS to check if that command succeeded.
-      # This means: zero inbound ports need to be open on the EC2
-      # security group. Compare to SSH, where port 22 had to accept
-      # inbound connections from GitHub's IP ranges.
-      - name: Deploy via SSM
         run: |
-          # github.sha = the exact commit hash that triggered this run.
-          # We use it as the Docker image tag so every deploy is traceable
-          # back to an exact commit.
-          IMAGE_TAG=${{ github.sha }}
+          echo "=== Checking assumed AWS identity ==="
+          aws sts get-caller-identity
+          echo "=== AWS region in use ==="
+          aws configure get region || echo "region not set via configure, using env"
+          echo "Region env var: $AWS_REGION"
 
-          # Bucket where deploy scripts + docker-compose.yml already live.
-          # NOTE: these files are uploaded to S3 MANUALLY (one-time, or
-          # whenever you edit a script) -- this workflow does NOT
-          # re-upload them on every run. Keeps CD fast and simple.
+      # ------------------------------------------------------------------
+      # STEP 3: Confirm the target inputs are actually populated.
+      # Catches a bad/missing repo variable BEFORE we waste an SSM call.
+      # ------------------------------------------------------------------
+      - name: Print deploy target info
+        run: |
+          echo "=== Deploy target info ==="
+          echo "EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}"
+          echo "AWS_ROLE_ARN:    ${{ vars.AWS_ROLE_ARN }}"
+          echo "Commit SHA (image tag): ${{ github.sha }}"
+          echo "Triggered ref: ${{ github.ref }}"
+
+          if [ -z "${{ vars.EC2_INSTANCE_ID }}" ]; then
+            echo "ERROR: EC2_INSTANCE_ID repo variable is empty. Aborting."
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # STEP 4: Confirm the instance is actually registered with SSM
+      # and online. This is the #1 cause of "send-command" silently
+      # having nothing to run against -- SSM Agent not running, or
+      # instance IAM role missing SSM core policy.
+      # ------------------------------------------------------------------
+      - name: Verify instance is SSM-managed and online
+        run: |
+          echo "=== Checking SSM registration status for instance ==="
+          aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=${{ vars.EC2_INSTANCE_ID }}" \
+            --output table
+
+          PING_STATUS=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=${{ vars.EC2_INSTANCE_ID }}" \
+            --query "InstanceInformationList[0].PingStatus" \
+            --output text)
+
+          echo "Ping status: $PING_STATUS"
+
+          if [ "$PING_STATUS" != "Online" ]; then
+            echo "ERROR: Instance is not Online in SSM (status: $PING_STATUS)."
+            echo "Check: SSM Agent running? Instance IAM role has AmazonSSMManagedInstanceCore?"
+            echo "Instance has outbound internet/VPC endpoint access to SSM?"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # STEP 5: Build the SSM command JSON file.
+      #
+      # IMPORTANT: this heredoc writes RAW file content. JSON has no
+      # comment syntax, and a heredoc does not strip "#" lines -- they
+      # get written into the file as literal invalid JSON. So there are
+      # NO comments inside the EOF block below. All explanation lives
+      # here, outside the heredoc:
+      #
+      #   mkdir -p ...                -> ensures target dir exists on EC2
+      #   aws s3 sync ...             -> runs ON EC2, pulls deploy files
+      #                                  from S3 (compose file + scripts).
+      #                                  Requires the EC2 INSTANCE ROLE
+      #                                  (not this GitHub OIDC role) to
+      #                                  have s3:GetObject + s3:ListBucket
+      #                                  on this bucket/path.
+      #   chmod +x deploy.sh          -> S3 downloads lose the unix
+      #                                  execute bit, so this is required
+      #                                  every single deploy.
+      #   bash deploy.sh $IMAGE_TAG   -> actual deploy logic (docker pull,
+      #                                  up -d, health check). Lives
+      #                                  entirely on EC2, where secrets
+      #                                  like DOCKERHUB_TOKEN are fetched
+      #                                  locally via SSM Parameter Store.
+      #                                  Non-zero exit here = SSM command
+      #                                  marked Failed = this job fails.
+      # ------------------------------------------------------------------
+      - name: Build SSM command payload
+        run: |
+          IMAGE_TAG=${{ github.sha }}
           BUCKET=order-platform-tf-state-891274465984
 
-          # We write the SSM command list to a JSON file instead of
-          # passing it inline as a string. Why: AWS CLI's inline
-          # shorthand syntax breaks badly with nested quotes/variables
-          # (we hit this earlier -- ParamValidation errors). A JSON
-          # file avoids all of that quoting pain.
           cat > params.json << EOF
           {
             "commands": [
               "mkdir -p /home/ubuntu/order-platform",
-
               "aws s3 sync s3://${BUCKET}/deploy/dev/artifacts/ /home/ubuntu/order-platform/",
-              # ^ This runs ON THE EC2 INSTANCE (not on the GitHub runner).
-              # It downloads docker-compose.yml + all scripts/dev/*.sh
-              # from S3 into the instance's local folder. Requires the
-              # EC2 INSTANCE's own IAM role (not this GitHub role) to have
-              # s3:GetObject + s3:ListBucket permission on this bucket path.
-
               "chmod +x /home/ubuntu/order-platform/scripts/dev/deploy.sh",
-              # Makes the script executable (S3 doesn't preserve unix
-              # execute permissions on download, so this is required
-              # every time).
-
               "bash /home/ubuntu/order-platform/scripts/dev/deploy.sh ${IMAGE_TAG}"
-              # ^ This is the actual deploy logic -- docker login, pull,
-              # up -d, health check loop, and (only if healthy)
-              # update-version.sh. All of THAT logic lives inside
-              # deploy.sh itself, which runs entirely on EC2, where
-              # secrets like DOCKERHUB_TOKEN actually exist (fetched
-              # via fetch_secrets.sh from SSM Parameter Store).
-              # If deploy.sh's health check fails, it exits non-zero
-              # on purpose -- meaning the SSM command is marked "Failed,"
-              # which flows back to fail this GitHub Actions job too.
-              # (Rollback isn't automatic here -- rollback.sh exists
-              # as a manual escape hatch you'd run yourself if needed.)
             ]
           }
           EOF
 
-          # Send the command to AWS SSM. This does NOT wait for it to
-          # finish -- it just queues it and immediately gets back a
-          # Command ID we can use to check status/results later.
+          echo "=== params.json written, validating JSON syntax ==="
+          if ! python3 -m json.tool params.json > /dev/null; then
+            echo "ERROR: params.json is not valid JSON. Contents below:"
+            cat params.json
+            exit 1
+          fi
+          echo "params.json is valid JSON. Contents:"
+          cat params.json
+
+      # ------------------------------------------------------------------
+      # STEP 6: Send the command to SSM and capture the Command ID.
+      # This call only QUEUES the command -- it does not wait for
+      # completion. If this step itself fails, it's an IAM/permissions
+      # or malformed-payload problem on the GitHub Actions side.
+      # ------------------------------------------------------------------
+      - name: Send deploy command via SSM
+        id: send_command
+        run: |
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --comment "CD deploy $IMAGE_TAG" \
+            --comment "CD deploy ${{ github.sha }}" \
             --parameters file://params.json \
             --query "Command.CommandId" \
             --output text)
 
-          echo "SSM Command ID: $COMMAND_ID"
+          if [ -z "$COMMAND_ID" ] || [ "$COMMAND_ID" == "None" ]; then
+            echo "ERROR: send-command did not return a Command ID."
+            exit 1
+          fi
 
-          # Block here until the SSM Agent on EC2 finishes running the
-          # command (success or failure). Without this wait, the workflow
-          # would report "success" immediately after just QUEUING the
-          # command, even if the deploy itself hadn't started yet.
-          # If the script inside EC2 fails (non-zero exit), this wait
-          # step itself fails too -- which is what makes this job go
-          # red on a bad deploy, same as the old SSH version did.
+          echo "SSM Command ID: $COMMAND_ID"
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # STEP 7: Wait for the command to finish, then ALWAYS print
+      # stdout/stderr from the instance -- regardless of success or
+      # failure -- so we can see what actually happened. We do NOT use
+      # `set -e` here on purpose: if the wait itself reports a failure,
+      # we still want to reach the point where we print the logs before
+      # the job exits non-zero.
+      # ------------------------------------------------------------------
+      - name: Wait for SSM command and fetch output
+        run: |
+          COMMAND_ID="${{ steps.send_command.outputs.command_id }}"
+          INSTANCE_ID="${{ vars.EC2_INSTANCE_ID }}"
+
+          echo "=== Waiting for command $COMMAND_ID to finish on $INSTANCE_ID ==="
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ vars.EC2_INSTANCE_ID }}"
+            --instance-id "$INSTANCE_ID" || echo "wait returned non-zero (command likely failed) -- continuing to fetch logs"
 
-          # Finally, fetch and print whatever the script printed to
-          # stdout on EC2 (health check attempts, "Deploy succeeded"
-          # message, etc.) so it shows up in the GitHub Actions log --
-          # otherwise you'd have no visibility into what happened on
-          # the actual instance.
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "Status" \
+            --output text)
+
+          echo "=== Final SSM command status: $STATUS ==="
+
+          echo "--- STDOUT from instance ---"
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --instance-id "$INSTANCE_ID" \
             --query "StandardOutputContent" \
             --output text
+
+          echo "--- STDERR from instance ---"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardErrorContent" \
+            --output text
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "=== Deploy FAILED (status: $STATUS) -- see STDOUT/STDERR above ==="
+            exit 1
+          fi
+
+          echo "=== Deploy succeeded ==="
