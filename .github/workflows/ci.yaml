@@ -162,11 +162,8 @@ jobs:
           exit-code: 0
 
       - name: Push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
 
   notify-discord:
     runs-on: ubuntu-latest
