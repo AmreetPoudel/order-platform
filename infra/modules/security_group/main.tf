@@ -33,7 +33,7 @@ resource "aws_vpc_security_group_ingress_rule" "allow_ssh" {
 
 resource "aws_vpc_security_group_ingress_rule" "api" {
   security_group_id = aws_security_group.order_platform_sg.id
-  cidr_ipv4 = var.order_platform_vpc_cidr
+  cidr_ipv4 = "0.0.0.0/0"
   from_port         = 4000
   ip_protocol       = "tcp"
   to_port           = 4000
