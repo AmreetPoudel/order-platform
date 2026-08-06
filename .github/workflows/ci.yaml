@@ -19,64 +19,54 @@ jobs:
   build-backend:
     runs-on: ubuntu-latest
     steps:
-
-      # Step 1: Pull your repo's code onto this runner.
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Install Node on the runner itself (separate from Docker) so
-      # `npm audit` can run directly against package-lock.json.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # Step 3: Check known dependency vulnerabilities BEFORE spending time
-      # building an image from them. Fails the job if HIGH/CRITICAL found.
       - name: Audit dependencies
         run: |
           cd backend
           npm audit --audit-level=high
 
-      # Step 4: Log in to Docker Hub, so the push later is authorized.
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Step 5: Build the image, but don't push yet — load it locally so
-      # Trivy can scan it first.
-      - name: Build image (no push yet)
+      # Build ONCE, tag with both the scan-local tag and the real push tag.
+      # load: true puts the image in the runner's local Docker daemon so
+      # both Trivy and `docker push` can reference it without rebuilding.
+      - name: Build image (single build, dual tag)
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: false
           load: true
-          tags: order-platform-api:scan
+          tags: |
+            order-platform-api:scan
+            ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-api:${{ github.sha }}
 
-      # Step 6: Scan the built image for OS-level and dependency CVEs.
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: order-platform-api:scan
           format: table
           severity: CRITICAL,HIGH
-          exit-code: 0   # report only — doesn't fail the build yet
+          exit-code: 0   # report only — see note on making this a real gate
 
-      # Step 7: Only now, after audit + scan, push the real tagged image.
+      # No rebuild — push the tag that's already sitting in the local daemon.
       - name: Push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-api:${{ github.sha }}
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-api:${{ github.sha }}
 
   # ===================== WORKER =====================
   build-worker:
     runs-on: ubuntu-latest
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -96,13 +86,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build image (no push yet)
+      - name: Build image (single build, dual tag)
         uses: docker/build-push-action@v6
         with:
           context: ./worker
           push: false
           load: true
-          tags: order-platform-worker:scan
+          tags: |
+            order-platform-worker:scan
+            ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-worker:${{ github.sha }}
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
@@ -113,17 +105,12 @@ jobs:
           exit-code: 0
 
       - name: Push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./worker
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-worker:${{ github.sha }}
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-worker:${{ github.sha }}
 
-# ===================== FRONTEND =====================
+  # ===================== FRONTEND =====================
   build-frontend:
     runs-on: ubuntu-latest
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -143,13 +130,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build image frontend
+      - name: Build image (single build, dual tag)
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: false
           load: true
-          tags: order-platform-frontend:scan
+          tags: |
+            order-platform-frontend:scan
+            ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
           build-args: |
             VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
 
@@ -162,13 +151,7 @@ jobs:
           exit-code: 0
 
       - name: Push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
-          build-args: |
-            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
 
   notify-discord:
     runs-on: ubuntu-latest
