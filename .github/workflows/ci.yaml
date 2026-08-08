@@ -140,7 +140,7 @@ jobs:
             order-platform-frontend:scan
             ${{ secrets.DOCKERHUB_USERNAME }}/order-platform-frontend:${{ github.sha }}
           build-args: |
-            VITE_API_URL=http://${{ vars.EC2_PUBLIC_IP }}:4000
+            VITE_API_URL=/api
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0

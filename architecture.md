@@ -1,249 +1,192 @@
-# Order Platform — Phase 1 Architecture (Local Docker Compose)
+# Order Platform — Phase 2 Architecture (AWS Terraform, Dynamic Secrets & CI/CD)
 
 ## Scope of this phase
 
-Everything in this document describes the current state: the entire stack
-running on a single machine via `docker compose up`, using hardcoded
-environment variables in the compose file. This is the foundation phase —
-before any CI/CD, before Terraform, before a real server. The goal here is
-a correct mental model of how six containers become one working
-application on one machine, so that later phases (SSH-based deploy to a
-manual server, then Terraform-provisioned servers, then EKS + ArgoCD) are
-extending a system that's already well understood, not a black box that
-happened to work.
+This document describes the **Phase 2 state** of the Order Platform architecture:
+1. **Application Layer**: A 6-container micro-services stack (React Frontend, Express API, Async Node Worker, PostgreSQL, Redis, RabbitMQ) implementing cache-aside reads and decoupled queue-based async writes.
+2. **Infrastructure Layer**: Fully provisioned on AWS via modular Terraform (`vpc`, `subnet`, `internet_gateway`, `route_table`, `elastic_ip`, `ec2`, `security_group`, `iam_role`, `oidc`).
+3. **Configuration & Secrets**: Dynamic injection from AWS SSM Parameter Store at container startup—no plaintext credentials committed to Git or stored in static files.
+4. **CI/CD Pipelines**: GitHub Actions workflows for automated secret scanning, vulnerability auditing, single-build container image pushing, SSH-based deployment with health checks, S3 version tracking, and automated rollback scripts.
 
-Environment variables are hardcoded directly in `docker-compose.yml` for
-this phase. Later phases will fetch these dynamically from AWS (Secrets
-Manager / SSM Parameter Store) instead — that change is deliberately out
-of scope here and is called out in the "what changes later" section at the
-end.
+Phase 3 (EKS, ArgoCD GitOps, Helm, External Secrets Operator) will build on this without requiring changes to the application code.
 
-## The six services
+---
 
-| Service    | Has its own Dockerfile? | Source |
-|------------|--------------------------|--------|
-| `frontend` | Yes — multi-stage: `node:20-alpine` build stage, `nginx:alpine` serve stage | Built from `./frontend` |
-| `api`      | Yes | Built from `./backend` |
-| `worker`   | Yes | Built from `./worker` |
-| `postgres` | No — stock image | `postgres:16-alpine` from Docker Hub |
-| `redis`    | No — stock image | `redis:7-alpine` from Docker Hub |
-| `rabbitmq` | No — stock image | `rabbitmq:3-management-alpine` from Docker Hub |
+## 1. Container Architecture & Distributed Patterns
 
-`api` and `worker` are two separate services built from the same
-conceptual backend codebase but running as two different processes with
-two different responsibilities — this split is the core of the whole
-architecture and is explained in the flow sections below.
+| Service | Build Source | Image / Base | Role & Infrastructure Pattern |
+|---|---|---|---|
+| `frontend` | `./frontend` | Multi-stage (`node:20-alpine` build -> `nginx:alpine` serve) | Serves React SPA static build on port `3000:80`. Bypasses Node runtime in production. |
+| `api` | `./backend` | Custom Node/Express | Entrypoint for frontend. Handles read caching (Redis) and publishes writes to RabbitMQ. Public port `4000`. |
+| `worker` | `./worker` | Custom Node | Async queue consumer (`prefetch(1)`). Sole process with PostgreSQL write privileges and cache invalidation duties (`DEL posts:all`). |
+| `postgres` | Stock | `postgres:16-alpine` | System of record (`postsdb`). Schema initialized via `db/init.sql`. Internal port 5432 (localhost bound `127.0.0.1:5432`). |
+| `redis` | Stock | `redis:7-alpine` | In-memory cache for `GET /api/posts` (30s TTL). Internal port 6379 (localhost bound `127.0.0.1:6379`). |
+| `rabbitmq` | Stock | `rabbitmq:3-management-alpine` | Message queue (`posts_queue`) decoupling API writes from DB persistence. Management UI on port `15672` (SSH tunneled). |
 
-## What the compose file actually does
+---
 
-`docker-compose.yml` is the single orchestration point for this phase. It
-does three jobs, and it's worth being precise that these are three
-separate jobs, not one blurred concern:
+## 2. Decoupled Read/Write Flows
 
-1. **Build instructions** — for `frontend`, `api`, and `worker`, it points
-   at each service's Dockerfile (`build: ./backend`, etc.) and tells
-   Compose to build an image from source rather than pull one.
-2. **Environment variable injection** — each service's `environment:`
-   block hardcodes its config (`PGHOST: postgres`, `REDIS_HOST: redis`,
-   `RABBITMQ_HOST: rabbitmq`, credentials, etc.) directly into that
-   container's process environment at container start. The application
-   code (Node's `process.env`) reads these values — Compose doesn't
-   interpret or validate them, it just sets them.
-3. **Networking** — Compose creates a custom bridge network and attaches
-   every service to it, which is what makes name-based resolution between
-   containers possible at all (see next section).
+### Write Flow (Async Producer / Consumer)
 
-Compose itself has no involvement in cache logic, queue logic, or the
-read/write patterns described below — all of that is implemented in
-`api/index.js` and `worker/index.js`. Compose's job ends at "build these
-images, give them these env vars, put them on the same network." What the
-application does with that is entirely code, not orchestration.
+```mermaid
+sequenceDiagram
+    participant U as Browser
+    participant A as api (Express)
+    participant Q as RabbitMQ (posts_queue)
+    participant W as worker
+    participant P as Postgres
+    participant R as Redis
 
-## How containers find each other: DNS resolution
-
-Because all six services sit on the same Compose-created network, Docker
-runs an embedded DNS resolver inside every container at the fixed address
-`127.0.0.11`. Each container's `/etc/resolv.conf` is automatically pointed
-at that address. When `api`'s code resolves the hostname `postgres`
-(because `PGHOST=postgres`), the sequence is:
-
-1. Node's DNS lookup queries `127.0.0.11`.
-2. Docker's embedded resolver checks its live table of service names →
-   current internal IPs on that network.
-3. It returns the current IP of the `postgres` container (something like
-   `172.20.0.3`).
-4. Node connects to that IP on port 5432.
-
-The name being resolved is the **Compose service name** (the YAML key,
-e.g. `postgres`), not necessarily `container_name`. In this project's
-compose file, `container_name` happens to be set to the same string as
-the service name for convenience (so `docker exec -it postgres ...` reads
-cleanly), but that's cosmetic — DNS resolution would work identically
-without `container_name` being set at all, because Compose auto-registers
-the service name regardless.
-
-This resolution survives container restarts: if `postgres` restarts and
-gets a new internal IP, the DNS entry for the name `postgres` updates
-automatically. The application never hardcodes an IP, only ever the
-service name, which is what makes `PGHOST=postgres` a stable value across
-the container's entire lifecycle.
-
-**What DNS resolution does NOT guarantee:** that a name resolves to an IP
-only means the container exists on the network — it says nothing about
-whether the process inside that container is actually ready to accept
-connections yet. Postgres/Redis/RabbitMQ can all be resolvable via DNS
-seconds before they're actually listening and accepting queries. This is
-why `api` and `worker` have (or, in Redis's case, should have but
-currently don't) retry loops around their connection attempts on startup
-— DNS being resolvable and a service being ready are two different
-conditions.
-
-## A related but distinct mechanism: reaching the host machine itself
-
-Some real-world compose files (not this one, but worth documenting since
-it's a natural next question) include:
-
-```yaml
-extra_hosts:
-  - host.docker.internal:host-gateway
+    U->>A: POST /api/posts {title, content}
+    A->>Q: sendToQueue(persistent:true)
+    A-->>U: 202 Queued
+    Q->>W: consume (prefetch=1)
+    W->>P: INSERT INTO posts
+    W->>R: DEL posts:all
+    W->>Q: ack
 ```
 
-This is unrelated to container-to-container DNS above. It solves a
-different problem: letting a container reach a process running natively
-on the host machine itself — not inside any container. Docker adds a
-manual entry so `host.docker.internal` resolves to the host's gateway IP
-from inside the container. This matters when, for example, a
-containerized app needs to talk to a database installed directly on the
-host OS rather than running as a container, or during local development
-when a container needs to reach a tool running on the developer's own
-machine outside Docker entirely.
+### Read Flow (Cache-Aside Pattern)
 
-For completeness, the three distinct addressing cases in this kind of
-setup:
+```mermaid
+sequenceDiagram
+    participant U as Browser
+    participant A as api
+    participant R as Redis
+    participant P as Postgres
 
-| Target | Mechanism |
-|---|---|
-| Another container, same Docker network | Service name via Docker's embedded DNS (`127.0.0.11`) |
-| Another container, different Docker network | Attach to both networks, or route through a published host port |
-| The host machine itself (non-containerized process) | `host.docker.internal`, enabled via `extra_hosts: host-gateway` |
-
-## Config in files vs config as environment variables
-
-Also worth documenting here since it's a pattern you'll see in real prod
-compose files even though this project's own compose file doesn't use it:
-some setups bind-mount a `.env` file into the container instead of (or in
-addition to) using the `environment:` block —
-
-```yaml
-volumes:
-  - ./.env:/app/.env:ro
+    U->>A: GET /api/posts
+    A->>R: GET posts:all
+    alt cache hit
+        R-->>A: cached JSON
+        A-->>U: 200 {source:"cache", posts}
+    else cache miss
+        A->>P: SELECT * FROM posts ORDER BY created_at DESC
+        A->>R: SETEX posts:all 30s
+        A-->>U: 200 {source:"db", posts}
+    end
 ```
 
-This is a bind mount, not environment injection — Compose does not read
-or parse that file itself; it only makes the host's `.env` file visible
-inside the container at that path. It's the **application code** (via a
-library like `dotenv`) that opens the file and populates `process.env` at
-startup. Compose and Docker have no awareness this parsing happened. The
-practical reason a real deployment favors this over hardcoding values in
-`environment:` is that it keeps actual secrets out of `docker-compose.yml`
-(which is usually committed to Git) and instead confined to a file that
-stays on the server's disk and is `.gitignore`'d — different `.env`
-contents per environment (developer's machine vs actual server), same
-mechanism.
+---
 
-## Write flow (POST) and read flow (GET) — two independent flows
+## 3. Infrastructure as Code (Terraform)
 
-These are commonly conflated, so it's worth stating plainly: a POST
-request and a GET request run through two entirely separate code paths
-that only share one point of contact — a single Redis key, `posts:all`.
+All cloud infrastructure is declared in `infra/` using a modular architecture separating reusable resource definitions (`infra/modules/`) from environment instantiation (`infra/environments/dev/`).
 
-### Write flow
+### Terraform Modules
 
-1. Browser sends `POST /api/posts`.
-2. `api` publishes the message to RabbitMQ. `api` does not touch Postgres
-   or Redis on write at all.
-3. `api` returns `202 Queued` immediately — this response says nothing
-   about whether the write has actually landed in Postgres yet.
-4. `worker`, a fully separate process consuming from RabbitMQ
-   independently of any browser request, picks the message up.
-5. `worker` runs `INSERT INTO posts` — the row is now permanently in
-   Postgres.
-6. `worker` runs `DEL posts:all` on Redis — unconditionally, with no
-   check of whether it was a hit or miss. It never reads Redis at all.
-7. `worker` acks the message.
+| Module Path | AWS Resources Provisioned | Design Purpose |
+|---|---|---|
+| `infra/modules/vpc` | `aws_vpc`, `aws_subnet` | Creates VPC (`10.0.0.0/16`) and public subnet (`10.0.1.0/24`) in `ap-south-1a`. |
+| `infra/modules/internet_gateway` | `aws_internet_gateway` | Attaches IGW to VPC for public internet connectivity. |
+| `infra/modules/route_table` | `aws_route_table` | Configures `0.0.0.0/0` default route to IGW; associated with public subnet. |
+| `infra/modules/elastic_ip` | `aws_eip`, `aws_eip_association` | Assigns static public IP to EC2 instance across reboots. |
+| `infra/modules/security_group` | `aws_security_group` | Ingress rules for SSH (`var.ssh_ip`), HTTP (`80`), API (`4000`), App (`3000`), and VPC-internal traffic. |
+| `infra/modules/ec2` | `aws_instance`, `aws_key_pair` | EC2 `t3.micro` instance running Docker + Docker Compose, provisioned with IAM Instance Profile. |
+| `infra/modules/iam_role` | `aws_iam_role`, `aws_iam_instance_profile` | Grants EC2 read access to SSM Parameter Store (`/order-platform/*`) and read/write to deployment state in S3. |
+| `infra/modules/oidc` | `aws_iam_openid_connect_provider`, `aws_iam_role` | Configures AWS IAM OIDC for GitHub Actions (`order_platform_github_actions_cd`), eliminating static AWS access keys. |
 
-### Read flow
+### Remote State with Native S3 Locking
 
-1. Browser sends `GET /api/posts`.
-2. `api` (not `worker` — this decision is made exclusively in the API's
-   GET handler) checks Redis for `posts:all`.
-3. Cache hit → return cached data, Postgres untouched.
-4. Cache miss → query Postgres, write the fresh result into Redis with a
-   30 second TTL, return it.
+State management uses Amazon S3 with native bucket locking (`use_lockfile = true` introduced in Terraform 1.10+):
 
-### Why "next read after a write is a miss" is not a hard guarantee
+```hcl
+terraform {
+  backend "s3" {
+    bucket       = "order-platform-tf-state-891274465984"
+    key          = "dev/terraform.tfstate"
+    region       = "ap-south-1"
+    use_lockfile = true
+    encrypt      = true
+  }
+}
+```
 
-INSERT happens before DEL (not the reverse) specifically to avoid a worse
-bug: if DEL ran first, there'd be a window where the cache is empty but
-the row isn't in Postgres yet, and a read landing in that window would
-re-cache stale data for a full TTL cycle. INSERT-then-DEL avoids that.
+---
 
-But even with this ordering, there's a genuine race: a GET request that
-started *before* the worker's INSERT commits can finish its own Postgres
-query (returning old data) *after* the worker's DEL has already run, and
-then write that stale result back into Redis — silently undoing the
-invalidation. The system's actual guarantee is eventual consistency
-bounded by the 30 second TTL, not instant freshness on the very next read.
-Fixing this properly would require a distributed lock, a versioned cache
-key, or a write-through cache where the worker writes the fresh value
-directly instead of only deleting — none of which is implemented
-currently.
+## 4. Configuration & Secrets Management (AWS SSM)
 
-## Known gaps in this phase (carried forward, not silently patched)
+Secrets (Postgres password, RabbitMQ credentials, Docker Hub tokens) are stored in **AWS SSM Parameter Store** under `/order-platform/*`.
 
-- No dead-letter queue: `worker` does `nack(msg, false, false)` on error,
-  which silently drops the message with no retry and no record of the
-  failure.
-- No idempotency key on writes: a double-submit creates duplicate rows.
-- No retry loop around the Redis connection in `worker`/`api` startup
-  (unlike RabbitMQ, which does retry) — a race if Redis is slow to accept
-  connections.
-- `prefetch(1)` gives ordering only within a single worker instance;
-  scaling worker replicas loses any ordering guarantee across the whole
-  queue.
-- Search (`/api/posts/search`) is an unindexed `ILIKE` scan — fine at
-  small scale, won't hold up on real data volume without `pg_trgm` + GIN
-  or a dedicated search engine.
-- Environment variables and secrets are hardcoded in `docker-compose.yml`
-  for this phase — acceptable for local dev, not carried forward as-is.
+### Dynamic Secret Sourcing (`scripts/dev/fetch_secrets.sh`)
 
-## Running it
+Rather than storing plaintext secrets in `docker-compose.yml` or static server `.env` files, secrets are retrieved dynamically at runtime on the EC2 instance:
 
 ```bash
-cd order-platform
-docker compose up --build
+# Fetches all parameters under /order-platform/ in a single API call
+RESULT=$(aws ssm get-parameters-by-path \
+  --path "/order-platform/" \
+  --with-decryption \
+  --region "ap-south-1" \
+  --query "Parameters[*].[Name,Value]" \
+  --output text)
+
+# Converts /order-platform/pg-password -> PG_PASSWORD and exports to environment
+while IFS=$'\t' read -r name value; do
+  key=$(basename "$name" | tr '[:lower:]-' '[:upper:]_')
+  export "$key"="$value"
+done <<< "$RESULT"
 ```
 
-- App: http://localhost:3000
-- API health: http://localhost:4000/health
-- RabbitMQ management UI: http://localhost:15672 (guest/guest)
+The script must be **sourced** (`source scripts/dev/fetch_secrets.sh`) prior to executing `docker compose up -d` so variables pass directly into container environments.
 
-## What changes in later phases
+---
 
-This document describes Phase 1 only: one machine, one `docker compose
-up`, hardcoded config. Nothing about the application code, the read/write
-flows, or the cache/queue behavior changes in later phases — only how the
-containers get built, deployed, and configured changes:
+## 5. CI/CD Workflows & Automated Deployment
 
-- **Phase 1 (deploy)**: images built and pushed to Docker Hub, deployed to
-  a manually provisioned server via SSH-based CI/CD. Same compose file
-  concept, now running on a remote box instead of your own machine.
-- **Phase 2**: the server itself becomes Terraform-managed instead of
-  manually created. Deployment mechanism is unchanged — still SSH-based.
-- **Phase 3**: no SSH at all. Deployment moves to EKS, reconciled by
-  ArgoCD from Git as the source of truth. This is also where the
-  hardcoded environment variables in this document get replaced by
-  dynamic secrets pulled from AWS Secrets Manager or SSM Parameter Store,
-  and where the Redis-connection retry gap and the DNS-resolves-but-not-
-  ready gap both get fixed properly via Kubernetes readiness probes
-  instead of ad-hoc retry loops.
+Deployment is driven by two GitHub Actions workflows located in `.github/workflows/`:
+
+### CI Pipeline (`.github/workflows/ci.yaml`)
+1. **Secret Scanning**: Scans full repository history using `gitleaks`.
+2. **Dependency Audit**: Runs `npm audit` on `backend`, `worker`, and `frontend`.
+3. **Single Build, Dual Tagging**: Builds container images once using `docker/build-push-action`, tagging locally as `:scan` and remotely with `${{ github.sha }}`.
+4. **Vulnerability Scanning**: Scans built images using `trivy` for `HIGH` and `CRITICAL` vulnerabilities.
+5. **Registry Push**: Pushes Git-SHA tagged images to Docker Hub.
+6. **Discord Alerts**: Sends pipeline execution status to Discord webhooks.
+
+### CD Pipeline (`.github/workflows/cd.yaml`)
+1. **Sparse Checkout**: Checks out only `docker-compose.yml` and `scripts/dev/`.
+2. **Secure SCP Transfer**: Transfers compose definitions and deployment scripts to `/home/ubuntu/order-platform` on EC2 using SSH keys.
+3. **OIDC & SSM Sourcing**: Authenticates via AWS IAM OIDC, sources SSM secrets via `fetch_secrets.sh`, and logs into Docker Hub.
+4. **Zero-Build Pull & Deploy**: Runs `docker compose pull` and `docker compose up -d` with `IMAGE_TAG=${{ github.sha }}`.
+5. **Automated Health Check Verification**: Executes a 15-attempt poll loop against `http://localhost:4000/health`.
+6. **S3 Version History Shift**: On health check success, invokes `scripts/dev/update-version.sh` to update S3 deployment state.
+
+---
+
+## 6. Version Tracking & Rollback Mechanism
+
+### Deployment Version History (`s3://$BUCKET/deploy/$ENV/versions.json`)
+
+`scripts/dev/update-version.sh` maintains a 3-entry ring buffer on S3 tracking verified deployments:
+
+```json
+{
+  "current": "commit-sha-new",
+  "previous": "commit-sha-last-good",
+  "oldest": "commit-sha-older"
+}
+```
+
+### Manual & Automated Rollback (`scripts/dev/rollback.sh`)
+
+If a deployment fails health checks or exhibits runtime failures:
+1. `rollback.sh` downloads `versions.json` from S3.
+2. Extracts the `current` known-good tag.
+3. Re-sources SSM secrets (`fetch_secrets.sh`).
+4. Re-executes `docker compose pull && docker compose up -d` using the known-good `IMAGE_TAG`.
+5. Verifies health status after rollback.
+
+---
+
+## 7. Known Architectural Gaps & Phase 3 Roadmap
+
+| Area | Current Phase 2 State | Planned Phase 3 Improvement |
+|---|---|---|
+| **Orchestration** | Docker Compose on single AWS EC2 instance | EKS (Elastic Kubernetes Service) cluster |
+| **GitOps** | GitHub Actions SSH-based push deployment | ArgoCD pull-based GitOps reconciliation |
+| **Secrets Engine** | AWS SSM Parameter Store + `fetch_secrets.sh` | External Secrets Operator (ESO) syncing AWS Secrets Manager directly into K8s Secrets |
+| **Queue Resilience** | `channel.nack(msg, false, false)` drops failed messages | Dead Letter Queue (DLQ) with SQS/RabbitMQ + CloudWatch Depth Alarm |
+| **Search Engine** | Unindexed `ILIKE` query scan in Postgres | PostgreSQL `pg_trgm` GIN index or OpenSearch / Elasticsearch cluster |
+| **Database Scalability** | Single-container PostgreSQL instance | Managed AWS RDS PostgreSQL with Multi-AZ failover |
