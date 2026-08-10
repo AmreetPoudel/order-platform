@@ -1,0 +1,10 @@
+resource "aws_subnet" "order_platform_public_subnet_cidr" {
+    vpc_id= module.VPC.order_platform_vpc_id
+      cidr_block = var.order_platform_public_subnet_cidr
+      map_public_ip_on_launch = true
+      tags={
+            Name="order_platform_public_subnet"
+      }
+
+
+}
