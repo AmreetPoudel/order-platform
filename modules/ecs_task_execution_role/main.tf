@@ -32,16 +32,22 @@ resource "aws_iam_role_policy" "ecs_task_execution_custom" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DockerHubCredentials"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
+        Sid      = "DockerHubCredentials"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.dockerhub_secret_arn
       },
       {
-        Sid    = "SSMParameterStoreRead"
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Sid      = "SSMParameterStoreRead"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
         Resource = "arn:aws:ssm:*:*:parameter${var.ssm_parameter_path_prefix}*"
+      },
+      {
+        Sid      = "KMSDecryptForSecureString"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "*"
       }
     ]
   })

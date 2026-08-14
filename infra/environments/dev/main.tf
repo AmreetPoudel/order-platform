@@ -90,3 +90,22 @@ module "ALB" {
   ]
   order_platform_alb_sg_id = [module.SG.order_platform_alb_sg_id]
 }
+
+# module "aws_ecs_cluster"{
+#   source= "../../../modules/ecs_cluster"
+#   cluster_name = "order_platform_ecs_cluster"
+# }
+
+# module "dockerhub_secret" {
+#   source             = "../../../modules/dockerhub_secret"
+#   ssm_username_path  = "/order-platform/dockerhub-username"
+#   ssm_token_path     = "/order-platform/dockerhub-token"
+#   secret_name        = "order-platform/dockerhub-credentials"
+# }
+
+# module "ecs_task_execution_role" {
+#   source                     = "../../../modules/ecs_task_execution_role"
+#   name_prefix                = "order-platform"
+#   dockerhub_secret_arn       = module.dockerhub_secret.secret_arn
+#   ssm_parameter_path_prefix  = "/order-platform/"
+# }
