@@ -1,0 +1,105 @@
+# ==============================================================================
+# docker-compose.stateful.yml
+# 
+# Purpose: Runs only the stateful infrastructure dependencies on the EC2 instance:
+#   1. PostgreSQL (Relational Database) - Port 5432
+#   2. Redis (In-Memory Cache)          - Port 6379
+#   3. RabbitMQ (Message Broker)        - Port 5672 (AMQP) & 15672 (Management UI)
+#
+# Why on EC2 instead of Fargate?
+#   - Fargate tasks are ephemeral and need complex EFS network storage mounts for persistence.
+#   - Running stateful services on EC2 gives fast, reliable EBS disk persistence.
+#   - ECS Fargate tasks (API & Worker) connect directly to this EC2 instance via its Private IP.
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. PostgreSQL Database
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_DB: postsdb
+      POSTGRES_USER: postgres
+      # Password passed from environment / SSM Parameter Store
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    ports:
+      # Bind to 0.0.0.0:5432 so ECS Fargate tasks in the private VPC subnet can connect.
+      # (Security Group restricts access to only the ECS Task Security Group).
+      - "5432:5432"
+    volumes:
+      # Named volume for persistent database files on the EC2 EBS volume
+      - pgdata:/var/lib/postgresql/data
+      # Initialize schema on first container startup
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # 2. Redis Cache
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    ports:
+      # Exposed to private VPC so API task can cache query results
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redisdata:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # 3. RabbitMQ Message Queue
+  # ----------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      # 5672: AMQP protocol port used by API (producer) and Worker (consumer)
+      - "5672:5672"
+      # 15672: Management Web Dashboard (can be accessed via SSH tunnel or bastion)
+      - "15672:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local
+  rabbitmqdata:
+    driver: local

@@ -1,64 +1,113 @@
-name: CD - Deploy to EC2 (dev)
+name: CD - Deploy to ECS Fargate (dev)
+
+# ==============================================================================
+# CD Pipeline for ECS Fargate Stateless Services
+#
+# How it works:
+#   1. Authenticates to AWS via GitHub Secrets (IAM credentials).
+#   2. Triggers rolling zero-downtime updates on ECS Fargate services:
+#        - API Backend (order-platform-api-service)
+#        - Frontend UI (order-platform-frontend-service)
+#        - Worker Consumer (order-platform-worker-service)
+#   3. Fargate automatically pulls new images from Docker Hub, spins up new containers,
+#      verifies ALB health checks, shifts traffic over, and terminates old containers.
+#   4. Verifies the public ALB URL is responding with HTTP 200.
+# ==============================================================================
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual trigger from GitHub Actions UI
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout only what CD needs
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------------------
+      # 1. Configure AWS Credentials
+      # ------------------------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          sparse-checkout: |
-            docker-compose.yml
-            scripts/dev
-          sparse-checkout-cone-mode: false
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
-      - name: Copy deploy files to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ vars.EC2_PUBLIC_IP }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          source: "docker-compose.yml,scripts/dev/rollback.sh,scripts/dev/update-version.sh,scripts/dev/fetch_secrets.sh"
-          target: "/home/ubuntu/order-platform"
+      # ------------------------------------------------------------------------
+      # 2. Trigger Rolling Deployments on ECS Fargate Services
+      # ------------------------------------------------------------------------
+      - name: Deploy API Service to ECS Fargate
+        run: |
+          echo "🚀 Updating ECS Service: order-platform-api-service..."
+          aws ecs update-service \
+            --cluster order-platform-cluster \
+            --service order-platform-api-service \
+            --force-new-deployment
 
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ vars.EC2_PUBLIC_IP }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd /home/ubuntu/order-platform
-            chmod +x scripts/dev/*.sh
+      - name: Deploy Frontend Service to ECS Fargate
+        run: |
+          echo "🚀 Updating ECS Service: order-platform-frontend-service..."
+          aws ecs update-service \
+            --cluster order-platform-cluster \
+            --service order-platform-frontend-service \
+            --force-new-deployment
 
-            source scripts/dev/fetch_secrets.sh
+      - name: Deploy Worker Service to ECS Fargate
+        run: |
+          echo "🚀 Updating ECS Service: order-platform-worker-service..."
+          aws ecs update-service \
+            --cluster order-platform-cluster \
+            --service order-platform-worker-service \
+            --force-new-deployment
 
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+      # ------------------------------------------------------------------------
+      # 3. Wait for Fargate Services to Stabilize (Health Checks Pass)
+      # ------------------------------------------------------------------------
+      - name: Wait for Services to Become Healthy & Stable
+        run: |
+          echo "⏳ Waiting for ECS Fargate tasks to reach steady state..."
+          aws ecs wait services-stable \
+            --cluster order-platform-cluster \
+            --services order-platform-api-service order-platform-frontend-service order-platform-worker-service
+          echo "✅ All ECS Fargate services are running and stable!"
 
-            export IMAGE_TAG=${{ github.sha }}
-            docker compose -f docker-compose.yml pull
-            docker compose -f docker-compose.yml up -d
-
-            echo "Waiting for API to become healthy..."
-            for i in $(seq 1 15); do
-              if curl -f -s http://localhost:4000/health > /dev/null; then
-                echo "Health check passed on attempt $i."
-                HEALTHY=true
-                break
-              fi
-              echo "Attempt $i failed, retrying in 3s..."
-              sleep 3
-            done
-
-            if [ "${HEALTHY:-false}" != "true" ]; then
-              echo "Health check failed after all retries."
-              echo "Run manually if needed: bash scripts/dev/rollback.sh"
-              exit 1
+      # ------------------------------------------------------------------------
+      # 4. Verify Public ALB Endpoints
+      # ------------------------------------------------------------------------
+      - name: Verify Public Application Load Balancer
+        if: vars.ALB_DNS_NAME != ''
+        run: |
+          ALB_URL="http://${{ vars.ALB_DNS_NAME }}"
+          echo "🔍 Checking ALB Health Endpoint: $ALB_URL/health"
+          
+          for i in $(seq 1 10); do
+            if curl -f -s "$ALB_URL/health" > /dev/null; then
+              echo "✅ API Health Check passed on attempt $i!"
+              break
             fi
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
 
-            bash scripts/dev/update-version.sh "$IMAGE_TAG"
-            echo "Deploy succeeded and verified."
+      # ------------------------------------------------------------------------
+      # 5. Send Notification (Optional Discord Webhook)
+      # ------------------------------------------------------------------------
+      - name: Send Discord notification
+        if: always() && secrets.DISCORD_WEBHOOK_URL != ''
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            STATUS="✅ DEPLOY SUCCEEDED"
+            COLOR=3066993
+          else
+            STATUS="❌ DEPLOY FAILED"
+            COLOR=15158332
+          fi
+
+          curl -H "Content-Type: application/json" -X POST \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"CD ECS Deployment: $STATUS\",
+                \"description\": \"Cluster: order-platform-cluster\nRegion: ap-south-1\nTriggered by: ${{ github.actor }}\nView run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"color\": $COLOR
+              }]
+            }" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}"

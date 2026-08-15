@@ -1,202 +1,193 @@
-# Order Platform — Architecture & Operations Guide (AWS ECS Fargate)
+# Order Platform — Architecture & Operations Guide
 
-A 6-container distributed cloud application demonstrating **cache-aside reads**, **producer/consumer queue-based async writes**, **Terraform Infrastructure-as-Code**, **AWS ECS Fargate serverless container orchestration**, **AWS Cloud Map private DNS**, **EFS persistent storage**, and **automated GitHub Actions CI/CD pipelines**.
-
----
-
-## 1. Project Phase Matrix
-
-| Phase | Infrastructure & Architecture | Status |
-|---|---|---|
-| **Phase 1** | Local multi-container Docker Compose stack (`api`, `worker`, `frontend`, `postgres`, `redis`, `rabbitmq`) | ✅ Complete |
-| **Phase 2** | AWS ECS Fargate serverless container stack, Application Load Balancer (ALB), Cloud Map Private DNS (`order-platform.local`), EFS persistence, SSM Secret injection, GitHub Actions OIDC & ECS deployments | ✅ Active (`fargate-ecs`) |
-| **Phase 3** | AWS EKS (Kubernetes), ArgoCD GitOps, Helm Charts, External Secrets Operator, AWS Managed RDS & ElastiCache | ⏳ Planned |
+A scalable cloud platform built with a **Stateless & Stateful Hybrid Architecture**:
+- **Stateless Services (AWS ECS Fargate)**: Frontend (React/Nginx), API (Node/Express), Worker (RabbitMQ Consumer).
+- **Stateful Services (AWS EC2)**: PostgreSQL (Relational DB), Redis (Cache), RabbitMQ (Message Broker) in Private Subnet with EBS persistent storage.
+- **Networking & Routing**: Application Load Balancer (ALB) with path-based routing (`/` $\rightarrow$ Frontend, `/api/*` $\rightarrow$ API Backend).
+- **Automation**: Terraform Infrastructure-as-Code & GitHub Actions CI/CD with rolling zero-downtime deployments.
 
 ---
 
-## 2. High-Level System Architecture
+## 1. System Architecture
 
 ```
-                               ┌───────────────────────────┐
-                               │   Public Internet Traffic │
-                               └─────────────┬─────────────┘
-                                             │
-                                             ▼
-                               ┌───────────────────────────┐
-                               │ Application Load Balancer │
-                               │        (Public ALB)       │
-                               └─────────────┬─────────────┘
-                                             │
-                       ┌─────────────────────┴─────────────────────┐
-             Path: /*  │                                  Path: /api/* & /health
-                       ▼                                           ▼
-          ┌──────────────────────────┐                ┌──────────────────────────┐
-          │   Frontend Target Group  │                │     API Target Group     │
-          └────────────┬─────────────┘                └────────────┬─────────────┘
-                       │                                           │
-                       ▼                                           ▼
-          ┌──────────────────────────┐                ┌──────────────────────────┐
-          │  Frontend Task (Fargate) │                │    API Task (Fargate)    │
-          └──────────────────────────┘                └────────────┬─────────────┘
-                                                                   │
-                                                ┌──────────────────┴──────────────────┐
-                                                │ (Cloud Map: order-platform.local)   │
-                                                ▼                                     ▼
-                                      ┌──────────────────┐                  ┌──────────────────┐
-                                      │   Redis Task     │                  │  RabbitMQ Task   │
-                                      │ (Cache, 30s TTL) │                  │ (Message Queue)  │
-                                      └──────────────────┘                  └────────┬─────────┘
-                                                                                     │ Consume
-                                                                                     ▼
-                                      ┌──────────────────┐                  ┌──────────────────┐
-                                      │  PostgreSQL Task │◄─────────────────│   Worker Task    │
-                                      │  (EFS Persistent)│     INSERT       │ (Queue Consumer) │
-                                      └──────────────────┘                  └──────────────────┘
+                        [ Internet / User Browser ]
+                                     │
+                                     ▼ (Port 80)
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Application Load Balancer (ALB)                     │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │
+                   ┌─────────────────┴─────────────────┐
+    Path: / (Default)                                   │ Path: /api/* & /health
+                   ▼                                   ▼
+┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
+│             ECS FARGATE             │ │             ECS FARGATE             │
+│        Frontend (React/Nginx)       │ │          API Backend (Node)         │
+│               Port 80               │ │              Port 4000              │
+└─────────────────────────────────────┘ └──────────────────┬──────────────────┘
+                                                           │
+                                        (Private Subnet)   │ (DB & Cache Queries)
+                                                           ▼
+                                ┌─────────────────────────────────────────────┐
+                                │            STATEFUL EC2 INSTANCE            │
+                                │            (In Private Subnet)              │
+                                │                                             │
+                                │   PostgreSQL         Redis       RabbitMQ   │
+                                │    (:5432)          (:6379)      (:5672)    │
+                                └──────────────────────────▲───────────▲──────┘
+                                                           │           │
+                                                           │ (Consume) │
+                                                ┌──────────┴───────────┴──────┐
+                                                │         ECS FARGATE         │
+                                                │        Worker Task          │
+                                                └─────────────────────────────┘
 ```
 
 ---
 
-## 3. Microservice Infrastructure Summary
+## 2. Microservice & Layer Summary
 
-| Component | Container Image | Sizing (CPU / RAM) | Network / Discovery Endpoint | Persistent Storage |
+| Component | Layer / Host | Sizing | Network / Port | Storage / Persistence |
 |---|---|---|---|---|
-| `frontend` | `${DOCKERHUB_USERNAME}/order-platform-frontend:${SHA}` | `256` / `512 MB` | ALB Listener Path `/*` (Port 80) | Ephemeral |
-| `api` | `${DOCKERHUB_USERNAME}/order-platform-api:${SHA}` | `256` / `512 MB` | ALB Listener Path `/api/*` & `/health` (Port 4000) | Ephemeral |
-| `worker` | `${DOCKERHUB_USERNAME}/order-platform-worker:${SHA}` | `256` / `512 MB` | Internal Queue Consumer | Ephemeral |
-| `postgres` | `postgres:16-alpine` | `256` / `512 MB` | `postgres.order-platform.local:5432` | Amazon EFS (`/var/lib/postgresql/data`) |
-| `redis` | `redis:7-alpine` | `256` / `512 MB` | `redis.order-platform.local:6379` | In-memory |
-| `rabbitmq` | `rabbitmq:3-management-alpine` | `256` / `512 MB` | `rabbitmq.order-platform.local:5672` / `:15672` | Ephemeral |
+| `frontend` | **ECS Fargate** | 0.25 vCPU / 512 MB | ALB Default Path `/*` (Port 80) | Ephemeral |
+| `api` | **ECS Fargate** | 0.25 vCPU / 512 MB | ALB Listener Path `/api/*` & `/health` (Port 4000) | Ephemeral |
+| `worker` | **ECS Fargate** | 0.25 vCPU / 512 MB | Internal Queue Consumer (No HTTP port) | Ephemeral |
+| `postgres` | **EC2 Instance** | `t3.small` (Shared) | `10.0.1.X:5432` (Private Subnet only) | Persistent EBS Disk (`gp3`) |
+| `redis` | **EC2 Instance** | `t3.small` (Shared) | `10.0.1.X:6379` (Private Subnet only) | Persistent Volume (`redisdata`) |
+| `rabbitmq` | **EC2 Instance** | `t3.small` (Shared) | `10.0.1.X:5672` (Private Subnet only) | Persistent Volume (`rabbitmqdata`) |
 
 ---
 
-## 4. Distributed Application Flow Patterns
+## 3. Distributed Application Flow Patterns
 
-### 1. Write Path (Decoupled Async Writes)
-1. Browser sends `POST /api/posts {title, content}` to ALB.
-2. ALB forwards request to `api` target group on port `4000`.
-3. `api` task publishes a persistent JSON message to `posts_queue` in `rabbitmq.order-platform.local:5672`.
-4. `api` task returns `HTTP 202 Queued` immediately without waiting for database persistence.
-5. `worker` task continuously consumes from `posts_queue` (`prefetch=1`).
-6. `worker` inserts record into `postgres.order-platform.local:5432` and invalidates Redis cache key (`DEL posts:all`).
+### 1. Write Path (Asynchronous Decoupled Writes)
+1. Browser sends `POST /api/posts {title, content}` to the public ALB.
+2. ALB forwards the request to the `api` target group on port `4000`.
+3. `api` task publishes a persistent message to `posts_queue` on RabbitMQ (`EC2:5672`).
+4. `api` immediately responds with `HTTP 202 Queued`.
+5. `worker` task pulls the message from RabbitMQ and writes the record to PostgreSQL (`EC2:5432`).
+6. `worker` invalidates the Redis cache (`EC2:6379`).
 
 ### 2. Read Path (Cache-Aside Pattern)
-1. Browser sends `GET /api/posts` to ALB.
-2. ALB forwards request to `api` target group on port `4000`.
-3. `api` task queries `redis.order-platform.local:6379` for key `posts:all`.
-4. **Cache Hit**: Returns cached JSON string directly (`source: "cache"`).
-5. **Cache Miss**: Queries `postgres.order-platform.local:5432`, caches result in Redis with a 30s TTL, and returns JSON response (`source: "db"`).
+1. Browser sends `GET /api/posts` to the ALB.
+2. ALB forwards to `api` target group on port `4000`.
+3. `api` checks Redis (`EC2:6379`) for key `posts:all`:
+   - **Cache Hit**: Returns cached JSON directly (`source: "cache"`).
+   - **Cache Miss**: Queries PostgreSQL (`EC2:5432`), writes result to Redis with 30s TTL, and returns response (`source: "db"`).
 
 ---
 
-## 5. Infrastructure as Code (Terraform) Setup
-
-Infrastructure is provisioned using Terraform in `infra/`:
+## 4. Repository & Terraform Structure
 
 ```
-infra/
-├── environments/
-│   └── dev/                  # Environment root module & S3 backend
-└── modules/
-    ├── vpc/                  # Multi-AZ VPC and Public Subnets (ap-south-1a & 1b)
-    ├── internet_gateway/     # AWS Internet Gateway
-    ├── route_table/          # Public Route Tables and Associations
-    ├── security_group/       # ALB Security Group & ECS Tasks Security Group
-    ├── alb/                  # Application Load Balancer & IP-based Target Groups
-    ├── service_discovery/    # AWS Cloud Map Private DNS Namespace (order-platform.local)
-    ├── efs/                  # AWS EFS File System & POSIX Access Point for Postgres
-    ├── ecs/                  # ECS Cluster, Task Definitions, Fargate Services
-    ├── iam_role/             # ECS Execution Role & Task Roles
-    └── oidc/                 # GitHub Actions AWS OIDC Role for ECS Deployment
+├── .github/
+│   └── workflows/
+│       ├── ci.yaml                   # Image build, Trivy scan, Docker Hub push
+│       └── cd.yaml                   # Zero-downtime rolling deployment to ECS Fargate
+├── backend/                          # Express.js REST API
+├── frontend/                         # React Web App (Vite + Nginx)
+├── worker/                           # RabbitMQ Background Consumer
+├── db/                               # PostgreSQL init.sql schema
+├── docker-compose.yml                # Full stack local development
+├── docker-compose.stateful.yml       # EC2 compose for Postgres, Redis, RabbitMQ
+├── modules/
+│   ├── VPC/                          # VPC (10.0.0.0/16)
+│   ├── public_subnet/                # Multi-AZ Public Subnets (ap-south-1a & 1b)
+│   ├── private_subnet/               # Multi-AZ Private Subnets (ap-south-1a & 1b)
+│   ├── internet_gateway/             # Internet Gateway
+│   ├── nat_gateway/                  # NAT Gateways for private subnet egress
+│   ├── route_table/                  # Public and Private route tables
+│   ├── SG/                           # ALB Security Group
+│   ├── ALB/                          # Application Load Balancer
+│   ├── dockerhub_secret/             # Secrets Manager Docker Hub credentials
+│   ├── stateful_ec2/                 # EC2 instance & SG for Postgres, Redis, RabbitMQ
+│   └── ECS/                          # ECS Cluster, Task Definitions, Services, Target Groups
+└── infra/
+    └── environments/
+        └── dev/                      # Root environment module & S3 backend
+            ├── main.tf
+            └── outputs.tf
 ```
 
-### Terraform Execution
-
-1. Initialize Terraform remote state (S3 backend with native state locking `use_lockfile = true`):
-   ```bash
-   cd infra/environments/dev
-   terraform init
-   ```
-
-2. Review planned resource changes:
-   ```bash
-   terraform plan
-   ```
-
-3. Provision AWS infrastructure:
-   ```bash
-   terraform apply
-   ```
-
-Outputs will display `alb_dns_name` and `github_actions_role_arn`.
-
 ---
 
-## 6. Secrets Management (AWS SSM Parameter Store)
+## 5. Deployment Instructions
 
-Secrets (`PG_PASSWORD`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`) are stored in AWS SSM Parameter Store under `/order-platform/*`.
-
-### Native ECS Secret Resolution
-No local shell scripts or plaintext files are used. ECS Task Definitions bind parameters natively:
-
-```json
-"secrets": [
-  {
-    "name": "PGPASSWORD",
-    "valueFrom": "arn:aws:ssm:ap-south-1:*:parameter/order-platform/pg-password"
-  }
-]
-```
-
-At task initialization, the ECS agent uses `ecsTaskExecutionRole` to fetch the parameter from SSM and populates the container process environment.
-
----
-
-## 7. Automated CI/CD Pipelines
-
-Pipelines are declared in `.github/workflows/`:
-
-### CI Workflow (`.github/workflows/ci.yaml`)
-- `gitleaks` repository secret scanning.
-- `npm audit` dependency security checks.
-- Docker image build with dual tagging (`:scan` for local scan, `${{ github.sha }}` for remote registry).
-- `trivy` container vulnerability scanning.
-- Docker Hub image push and Discord notification.
-
-### CD Workflow (`.github/workflows/cd.yaml`)
-- Passwordless AWS authentication via OpenID Connect (`aws-actions/configure-aws-credentials`).
-- Task definition rendering with new `${{ github.sha }}` image tag via `aws-actions/amazon-ecs-render-task-definition`.
-- Fargate rolling service deployment via `aws-actions/amazon-ecs-deploy-task-definition`.
-- Automated health check verification and circuit-breaker rollback on failure.
-
----
-
-## 8. Operational Troubleshooting & CloudWatch Commands
-
-### Viewing Container Logs in CloudWatch
-Container output is streamed to CloudWatch Log Group `/ecs/order-platform`:
-
+### Step 1: Provision Infrastructure via Terraform
 ```bash
-# View API task logs
-aws logs tail /ecs/order-platform --log-stream-prefix api --follow --region ap-south-1
+cd infra/environments/dev
 
-# View Worker task logs
-aws logs tail /ecs/order-platform --log-stream-prefix worker --follow --region ap-south-1
+# 1. Initialize backend & modules
+terraform init
+
+# 2. Review infrastructure changes
+terraform plan
+
+# 3. Apply changes to AWS
+terraform apply
 ```
 
-### Inspecting ECS Services & Tasks
+### Step 2: Access Endpoints
+Upon successful apply, Terraform outputs:
+```text
+alb_dns_name            = "http://order-platform-alb-xxxx.ap-south-1.elb.amazonaws.com"
+stateful_ec2_private_ip = "10.0.1.x"
+api_service_name        = "order-platform-api-service"
+frontend_service_name   = "order-platform-frontend-service"
+worker_service_name     = "order-platform-worker-service"
+```
+
+1. Open `http://<alb_dns_name>/` in your browser to view the **React Web UI**.
+2. Visit `http://<alb_dns_name>/health` to verify API health (`{"status":"ok"}`).
+
+---
+
+## 6. Secrets Management (AWS Systems Manager)
+
+Secrets are securely injected from AWS SSM Parameter Store at container startup via ECS Task Execution Role:
+- `/order-platform/pg-password` $\rightarrow$ `PGPASSWORD`
+- `/order-platform/rabbitmq-user` $\rightarrow$ `RABBITMQ_USER`
+- `/order-platform/rabbitmq-password` $\rightarrow$ `RABBITMQ_PASSWORD`
+
+Upload secrets via the provided helper script:
 ```bash
-# List running tasks in cluster
+bash infra/ssm_data_upload.sh
+```
+
+---
+
+## 7. CI/CD Workflows
+
+### CI Pipeline (`.github/workflows/ci.yaml`)
+- Gitleaks secret scan.
+- NPM dependency security audit.
+- Docker image build & Trivy vulnerability scan.
+- Push images to Docker Hub (`${DOCKERHUB_USERNAME}/order-platform-<service>:${SHA}`).
+
+### CD Pipeline (`.github/workflows/cd.yaml`)
+- Authenticates with AWS.
+- Triggers zero-downtime rolling updates on all 3 ECS Fargate services (`aws ecs update-service --force-new-deployment`).
+- Waits for tasks to stabilize and verifies ALB endpoint response.
+
+---
+
+## 8. Operational & Monitoring Commands
+
+### Stream Container Logs from CloudWatch
+```bash
+# Frontend Logs
+aws logs tail /ecs/order-platform-frontend --follow --region ap-south-1
+
+# API Backend Logs
+aws logs tail /ecs/order-platform-api --follow --region ap-south-1
+
+# Worker Logs
+aws logs tail /ecs/order-platform-worker --follow --region ap-south-1
+```
+
+### Inspect ECS Services
+```bash
 aws ecs list-tasks --cluster order-platform-cluster --region ap-south-1
-
-# Describe API service status
-aws ecs describe-services --cluster order-platform-cluster --services api --region ap-south-1
-```
-
-### Testing ALB Endpoints
-```bash
-# Test API Health Endpoint
-curl -i http://<ALB_DNS_NAME>/health
-
-# Fetch Posts List (Check source: "db" vs "cache")
-curl -i http://<ALB_DNS_NAME>/api/posts
+aws ecs describe-services --cluster order-platform-cluster --services order-platform-api-service --region ap-south-1
 ```
