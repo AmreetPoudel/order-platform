@@ -37,7 +37,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Deploy API Service to ECS Fargate
         run: |
-          echo " Updating ECS Service: order-platform-api-service..."
+          echo "🚀 Updating ECS Service: order-platform-api-service..."
           aws ecs update-service \
             --cluster order-platform-cluster \
             --service order-platform-api-service \
@@ -45,7 +45,7 @@ jobs:
 
       - name: Deploy Frontend Service to ECS Fargate
         run: |
-          echo " Updating ECS Service: order-platform-frontend-service..."
+          echo "🚀 Updating ECS Service: order-platform-frontend-service..."
           aws ecs update-service \
             --cluster order-platform-cluster \
             --service order-platform-frontend-service \
@@ -53,7 +53,7 @@ jobs:
 
       - name: Deploy Worker Service to ECS Fargate
         run: |
-          echo " Updating ECS Service: order-platform-worker-service..."
+          echo "🚀 Updating ECS Service: order-platform-worker-service..."
           aws ecs update-service \
             --cluster order-platform-cluster \
             --service order-platform-worker-service \
@@ -64,25 +64,31 @@ jobs:
       # ------------------------------------------------------------------------
       - name: Wait for Services to Become Healthy & Stable
         run: |
-          echo " Waiting for ECS Fargate tasks to reach steady state..."
+          echo "⏳ Waiting for ECS Fargate tasks to reach steady state..."
           aws ecs wait services-stable \
             --cluster order-platform-cluster \
             --services order-platform-api-service order-platform-frontend-service order-platform-worker-service
-          echo "All ECS Fargate services are running and stable!"
+          echo "✅ All ECS Fargate services are running and stable!"
 
       # ------------------------------------------------------------------------
       # 4. Verify Public ALB Endpoints
       # ------------------------------------------------------------------------
       - name: Verify Public Application Load Balancer
-        if: vars.ALB_DNS_NAME != ''
+        env:
+          ALB_DNS_NAME: ${{ vars.ALB_DNS_NAME }}
         run: |
-          ALB_URL="http://${{ vars.ALB_DNS_NAME }}"
-          echo " Checking ALB Health Endpoint: $ALB_URL/health"
+          if [ -z "$ALB_DNS_NAME" ]; then
+            echo "ALB_DNS_NAME repository variable is not set. Skipping endpoint curl test."
+            exit 0
+          fi
+
+          ALB_URL="http://${ALB_DNS_NAME}"
+          echo "🔍 Checking ALB Health Endpoint: $ALB_URL/health"
           
           for i in $(seq 1 10); do
             if curl -f -s "$ALB_URL/health" > /dev/null; then
-              echo " API Health Check passed on attempt $i!"
-              break
+              echo "✅ API Health Check passed on attempt $i!"
+              exit 0
             fi
             echo "Attempt $i failed, retrying in 5s..."
             sleep 5
@@ -92,13 +98,20 @@ jobs:
       # 5. Send Notification (Optional Discord Webhook)
       # ------------------------------------------------------------------------
       - name: Send Discord notification
-        if: always() && secrets.DISCORD_WEBHOOK_URL != ''
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "No Discord webhook configured, skipping notification."
+            exit 0
+          fi
+
           if [ "${{ job.status }}" = "success" ]; then
-            STATUS="DEPLOY SUCCEEDED"
+            STATUS="✅ DEPLOY SUCCEEDED"
             COLOR=3066993
           else
-            STATUS="DEPLOY FAILED"
+            STATUS="❌ DEPLOY FAILED"
             COLOR=15158332
           fi
 
@@ -110,4 +123,4 @@ jobs:
                 \"color\": $COLOR
               }]
             }" \
-            "${{ secrets.DISCORD_WEBHOOK_URL }}"
+            "$DISCORD_WEBHOOK_URL"
