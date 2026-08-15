@@ -5,6 +5,8 @@
 #   1. frontend : React UI (Port 80)
 #   2. api      : Express API Backend (Port 4000)
 #   3. worker   : RabbitMQ Consumer (Background process, No ports)
+#
+# All 3 tasks dynamically receive the exact Git commit SHA via `var.image_tag`.
 # ==============================================================================
 
 # ==============================================================================
@@ -21,7 +23,7 @@ resource "aws_ecs_task_definition" "frontend" {
   container_definitions = jsonencode([
     {
       name      = "frontend"
-      image     = var.frontend_image
+      image     = "${var.dockerhub_username}/order-platform-frontend:${var.image_tag}"
       essential = true
 
       portMappings = [
@@ -70,7 +72,7 @@ resource "aws_ecs_task_definition" "api" {
   container_definitions = jsonencode([
     {
       name      = "api"
-      image     = var.api_image
+      image     = "${var.dockerhub_username}/order-platform-api:${var.image_tag}"
       essential = true
 
       portMappings = [
@@ -137,7 +139,7 @@ resource "aws_ecs_task_definition" "worker" {
   container_definitions = jsonencode([
     {
       name      = "worker"
-      image     = var.worker_image
+      image     = "${var.dockerhub_username}/order-platform-worker:${var.image_tag}"
       essential = true
 
       # Worker does not listen on any HTTP port — it only consumes messages from RabbitMQ

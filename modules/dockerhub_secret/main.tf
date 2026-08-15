@@ -9,7 +9,8 @@ data "aws_ssm_parameter" "token" {
 }
 
 resource "aws_secretsmanager_secret" "dockerhub" {
-  name = var.secret_name
+  name                    = var.secret_name
+  recovery_window_in_days = 0 # Immediate purge on delete, avoids 30-day name locking
 }
 
 resource "aws_secretsmanager_secret_version" "dockerhub" {

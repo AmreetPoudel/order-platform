@@ -2,7 +2,7 @@
 # modules/stateful_ec2/main.tf
 #
 # Launches the EC2 instance hosting PostgreSQL, Redis, and RabbitMQ in private subnet.
-# Includes IAM role for SSM Session Manager (secure terminal access with zero open ports).
+# Reads credentials directly from SSM Parameter Store to ensure 100% matching auth with ECS.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -24,8 +24,25 @@ data "aws_ami" "ubuntu" {
 }
 
 # ------------------------------------------------------------------------------
-# 2. IAM Role & Instance Profile for AWS Systems Manager (SSM)
-# Allows you to securely access the EC2 terminal from AWS Console / CLI without SSH keys
+# 2. Fetch Passwords from SSM to match ECS Task credentials
+# ------------------------------------------------------------------------------
+data "aws_ssm_parameter" "pg_password" {
+  name            = "/order-platform/pg-password"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "rabbitmq_user" {
+  name            = "/order-platform/rabbitmq-user"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "rabbitmq_password" {
+  name            = "/order-platform/rabbitmq-password"
+  with_decryption = true
+}
+
+# ------------------------------------------------------------------------------
+# 3. IAM Role & Instance Profile for AWS Systems Manager (SSM)
 # ------------------------------------------------------------------------------
 resource "aws_iam_role" "stateful_ec2_role" {
   name = "order-platform-stateful-ec2-role"
@@ -55,7 +72,7 @@ resource "aws_iam_instance_profile" "stateful_ec2_profile" {
 }
 
 # ------------------------------------------------------------------------------
-# 3. EC2 Instance Definition
+# 4. EC2 Instance Definition
 # ------------------------------------------------------------------------------
 resource "aws_instance" "stateful" {
   ami                  = var.ami_id != "" ? var.ami_id : data.aws_ami.ubuntu.id
@@ -64,12 +81,13 @@ resource "aws_instance" "stateful" {
   vpc_security_group_ids = [aws_security_group.stateful_ec2_sg.id]
   iam_instance_profile = aws_iam_instance_profile.stateful_ec2_profile.name
   key_name             = var.key_name != "" ? var.key_name : null
+  user_data_replace_on_change = true
 
-  # Ensure the instance has a 20GB gp3 root volume for database storage
+  # 20GB gp3 root volume for persistent database files
   root_block_device {
     volume_size           = 20
     volume_type           = "gp3"
-    delete_on_termination = false # Protect data on instance stop/start
+    delete_on_termination = false
     encrypted             = true
     tags = {
       Name = "order-platform-stateful-db-disk"
@@ -111,8 +129,8 @@ resource "aws_instance" "stateful" {
               );
               SQL
 
-              # 3. Create stateful docker-compose.yml
-              cat << 'COMPOSE' > /opt/order-platform-stateful/docker-compose.yml
+              # 3. Create stateful docker-compose.yml with SSM credentials
+              cat << COMPOSE > /opt/order-platform-stateful/docker-compose.yml
               services:
                 postgres:
                   image: postgres:16-alpine
@@ -121,7 +139,7 @@ resource "aws_instance" "stateful" {
                   environment:
                     POSTGRES_DB: postsdb
                     POSTGRES_USER: postgres
-                    POSTGRES_PASSWORD: password123
+                    POSTGRES_PASSWORD: ${data.aws_ssm_parameter.pg_password.value}
                   ports:
                     - "5432:5432"
                   volumes:
@@ -152,8 +170,8 @@ resource "aws_instance" "stateful" {
                   container_name: rabbitmq
                   restart: always
                   environment:
-                    RABBITMQ_DEFAULT_USER: user
-                    RABBITMQ_DEFAULT_PASS: password123
+                    RABBITMQ_DEFAULT_USER: ${data.aws_ssm_parameter.rabbitmq_user.value}
+                    RABBITMQ_DEFAULT_PASS: ${data.aws_ssm_parameter.rabbitmq_password.value}
                   ports:
                     - "5672:5672"
                     - "15672:15672"

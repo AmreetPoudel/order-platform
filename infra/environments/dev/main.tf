@@ -20,6 +20,15 @@ terraform {
 }
 
 # ==============================================================================
+# Deployment Version Variable
+# ==============================================================================
+variable "image_tag" {
+  type        = string
+  description = "Docker image Git commit SHA tag"
+  default     = "378b552df7efb62e0848df1220e2b8efcd911ee1"
+}
+
+# ==============================================================================
 # 1. NETWORKING (VPC & Subnets)
 # ==============================================================================
 module "VPC" {
@@ -116,7 +125,7 @@ module "dockerhub_secret" {
   source            = "../../../modules/dockerhub_secret"
   ssm_username_path = "/order-platform/dockerhub-username"
   ssm_token_path    = "/order-platform/dockerhub-token"
-  secret_name       = "order-platform/dockerhub-credentials"
+  secret_name       = "order-platform/dockerhub-auth"
 }
 
 # ==============================================================================
@@ -145,15 +154,14 @@ module "ecs" {
   ssm_parameter_path_prefix = "/order-platform/"
   cluster_name              = "order-platform-cluster"
 
+  # Container Image Tag (Passed directly via variable)
+  image_tag                 = var.image_tag
+  dockerhub_username        = "aamreet"
+
   # Pass the Private IP of the Stateful EC2 instance so Fargate tasks can reach DB & Queue
   pg_host                   = module.stateful_ec2.private_ip
   redis_host                = module.stateful_ec2.private_ip
   rabbitmq_host             = module.stateful_ec2.private_ip
-
-  # Container Images (Replace with your Docker Hub repo/tag)
-  api_image                 = "amritpoudel/order-platform-api:latest"
-  frontend_image            = "amritpoudel/order-platform-frontend:latest"
-  worker_image              = "amritpoudel/order-platform-worker:latest"
 
   desired_count             = 1
 }

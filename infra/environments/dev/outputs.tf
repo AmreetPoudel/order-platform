@@ -9,6 +9,11 @@ output "alb_dns_name" {
   value       = "http://${module.ALB.order_platform_dns_name}"
 }
 
+output "deployed_image_tag" {
+  description = "Active Docker Image Git SHA deployed"
+  value       = var.image_tag
+}
+
 output "stateful_ec2_private_ip" {
   description = "Private IP of the EC2 instance hosting PostgreSQL, Redis, and RabbitMQ"
   value       = module.stateful_ec2.private_ip

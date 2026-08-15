@@ -42,24 +42,18 @@ variable "cluster_name" {
 }
 
 # ------------------------------------------------------------------------------
-# Container Images
+# Container Image Tag (Single Source of Truth from S3 versions.json)
 # ------------------------------------------------------------------------------
-variable "api_image" {
+variable "image_tag" {
   type        = string
-  description = "Docker image for the API backend (e.g. username/order-platform-api:tag)"
-  default     = "amritpoudel/order-platform-api:latest"
+  description = "Docker image tag (Git commit SHA) for api, frontend, and worker"
+  default     = "378b552df7efb62e0848df1220e2b8efcd911ee1"
 }
 
-variable "frontend_image" {
+variable "dockerhub_username" {
   type        = string
-  description = "Docker image for the Frontend web app (e.g. username/order-platform-frontend:tag)"
-  default     = "amritpoudel/order-platform-frontend:latest"
-}
-
-variable "worker_image" {
-  type        = string
-  description = "Docker image for the Background Worker (e.g. username/order-platform-worker:tag)"
-  default     = "amritpoudel/order-platform-worker:latest"
+  description = "Docker Hub account/organization name"
+  default     = "aamreet"
 }
 
 # ------------------------------------------------------------------------------
