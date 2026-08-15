@@ -1,3 +1,11 @@
+"""
+generate_diagram.py
+Generates the architecture diagram for the Order Platform hybrid deployment:
+- Stateless Layer: AWS ECS Fargate (Frontend, API, Worker)
+- Stateful Layer: AWS EC2 Instance in Private Subnet (PostgreSQL, Redis, RabbitMQ)
+- Public Ingress: Application Load Balancer with Path-Based Routing
+"""
+
 from diagrams import Cluster, Diagram, Edge
 from diagrams.aws.general import Users
 from diagrams.aws.network import (
@@ -6,112 +14,123 @@ from diagrams.aws.network import (
     InternetGateway,
     NATGateway,
     ELB,
-    Route53
 )
-from diagrams.aws.compute import Fargate
-from diagrams.aws.storage import ElasticFileSystemEFS, SimpleStorageServiceS3
-from diagrams.aws.security import Shield, IAMRole
+from diagrams.aws.compute import Fargate, EC2
+from diagrams.aws.storage import EBS, SimpleStorageServiceS3
+from diagrams.aws.security import IAMRole
 from diagrams.aws.management import ParameterStore, Cloudwatch
+from diagrams.onprem.database import PostgreSQL
+from diagrams.onprem.inmemory import Redis
+from diagrams.onprem.queue import Rabbitmq
+from diagrams.onprem.container import Docker
 
 graph_attr = {
-    "fontsize": "20",
-    "fontname": "Sans-Serif",
+    "fontsize": "24",
+    "fontname": "Helvetica Neue",
     "bgcolor": "#FAFAFA",
-    "pad": "1.0",
-    "splines": "curved",
-    "nodesep": "0.8",
-    "ranksep": "1.0",
-    "concentrate": "true"
+    "pad": "0.8",
+    "splines": "spline",
+    "nodesep": "0.7",
+    "ranksep": "0.9",
+    "concentrate": "false"
 }
 
 node_attr = {
-    "fontsize": "12",
-    "fontname": "Sans-Serif"
+    "fontsize": "11",
+    "fontname": "Helvetica Neue",
+    "fontcolor": "#212121"
 }
 
 edge_attr = {
-    "fontsize": "11",
-    "fontname": "Sans-Serif"
+    "fontsize": "10",
+    "fontname": "Helvetica Neue",
+    "fontcolor": "#37474F"
 }
 
 with Diagram(
-    name="Order Platform — Production AWS ECS Fargate Architecture (Phase 2)",
-    filename="aws_order_platform_infrastructure",
+    name="Order Platform — Hybrid Cloud Architecture\n(ECS Fargate Stateless + EC2 Stateful)",
+    filename="order_platform_architecture",
     show=False,
     direction="TB",
     graph_attr=graph_attr,
     node_attr=node_attr,
     edge_attr=edge_attr
 ):
-    users = Users("External Web Traffic\n(HTTP 80)")
-    
-    with Cluster("AWS Region: ap-south-1 (Mumbai)"):
-        s3_state = SimpleStorageServiceS3("S3 State Backend\n(order-platform-tf-state)")
-        exec_role = IAMRole("IAM Execution Role\n(ecsTaskExecutionRole)")
-        ssm_secrets = ParameterStore("SSM Parameter Store\n(/order-platform/*)")
-        cw_logs = Cloudwatch("CloudWatch Log Group\n(/ecs/order-platform)")
+    users = Users("Internet Users\n(Web Browser)")
+
+    with Cluster("AWS Cloud (Region: ap-south-1 Mumbai)"):
+        # Management Services
+        with Cluster("Platform Services & Management"):
+            s3_state = SimpleStorageServiceS3("S3 State Backend\n(Remote State)")
+            exec_role = IAMRole("IAM Execution Role\n(Secrets & Logs Access)")
+            ssm_secrets = ParameterStore("SSM Parameter Store\n(/order-platform/*)")
+            cw_logs = Cloudwatch("CloudWatch Logs\n(/ecs/order-platform-*)")
 
         with Cluster("VPC: order_platform_vpc (10.0.0.0/16)"):
             igw = InternetGateway("Internet Gateway")
-            alb = ELB("Application Load Balancer\n(Path Ingress)")
 
-            with Cluster("Availability Zone: ap-south-1a"):
+            # Public Subnets (Dual-AZ for High Availability ALB)
+            with Cluster("Public Subnets (Dual-AZ)"):
                 with Cluster("Public Subnet A (10.0.3.0/24)"):
-                    pub_sub_a = PublicSubnet("public_subnet_a")
                     nat_a = NATGateway("NAT Gateway A")
-                
-                with Cluster("Private Subnet A (10.0.1.0/24)"):
-                    priv_sub_a = PrivateSubnet("private_subnet_a")
-                    frontend_task = Fargate("Frontend Task\n(React / Port 80)")
-                    api_task = Fargate("API Task\n(Node.js / Port 4000)")
-                    worker_task = Fargate("Worker Task\n(Background Consumer)")
-
-            with Cluster("Availability Zone: ap-south-1b"):
                 with Cluster("Public Subnet B (10.0.4.0/24)"):
-                    pub_sub_b = PublicSubnet("public_subnet_b")
                     nat_b = NATGateway("NAT Gateway B")
                 
-                with Cluster("Private Subnet B (10.0.2.0/24)"):
-                    priv_sub_b = PrivateSubnet("private_subnet_b")
-                    postgres_task = Fargate("PostgreSQL Task\n(Port 5432)")
-                    redis_task = Fargate("Redis Task\n(Port 6379)")
-                    rabbitmq_task = Fargate("RabbitMQ Task\n(Port 5672/15672)")
+                alb = ELB("Application Load Balancer\n(Public Port 80)")
 
-            efs = ElasticFileSystemEFS("Amazon EFS Storage\n(POSIX Access Point uid:999)")
+            # Private Subnet Layer
+            with Cluster("Private Subnets (Isolated Egress via NAT)"):
 
-            # Public Ingress Traffic
-            users >> Edge(color="#1976D2", style="bold", label="HTTP :80") >> alb
-            alb >> Edge(color="#1976D2", label="Path /*") >> frontend_task
-            alb >> Edge(color="#1976D2", label="Path /api/*") >> api_task
+                # Stateless Compute on ECS Fargate
+                with Cluster("Stateless Application Tier (AWS ECS Fargate)"):
+                    frontend_task = Fargate("Frontend Task\n(React UI / Port 80)")
+                    api_task = Fargate("API Backend Task\n(Express / Port 4000)")
+                    worker_task = Fargate("Worker Task\n(Queue Consumer)")
 
-            # Cloud Map Private Service Discovery Connections
-            api_task >> Edge(color="#7B1FA2", style="dashed", label="redis.order-platform.local") >> redis_task
-            api_task >> Edge(color="#7B1FA2", style="dashed", label="rabbitmq.order-platform.local") >> rabbitmq_task
-            api_task >> Edge(color="#7B1FA2", style="dashed", label="postgres.order-platform.local") >> postgres_task
+                # Stateful Compute on EC2
+                with Cluster("Stateful Data Tier (EC2 in Private Subnet)"):
+                    with Cluster("Docker Compose Services (EC2 Host: 10.0.1.X)"):
+                        docker_host = Docker("Docker Engine")
+                        postgres = PostgreSQL("PostgreSQL\n(Port 5432)")
+                        redis = Redis("Redis Cache\n(Port 6379)")
+                        rabbitmq = Rabbitmq("RabbitMQ Broker\n(Port 5672)")
+                    
+                    ebs_disk = EBS("Persistent EBS Disk\n(gp3 / 20 GB)")
 
-            # Queue & DB Pipeline
-            worker_task >> Edge(color="#388E3C", style="bold", label="Consume Message") >> rabbitmq_task
-            worker_task >> Edge(color="#388E3C", style="bold", label="Insert Record") >> postgres_task
+            # ------------------------------------------------------------------
+            # Data & Traffic Flow Connections
+            # ------------------------------------------------------------------
 
-            # EFS Storage Mount
-            postgres_task - Edge(color="#D32F2F", style="bold", label="Mount /var/lib/postgresql/data") - efs
+            # 1. Public Ingress Traffic
+            users >> Edge(color="#1E88E5", style="bold", label="HTTP :80") >> igw >> alb
+            alb >> Edge(color="#1E88E5", style="bold", label="Path: /*") >> frontend_task
+            alb >> Edge(color="#00897B", style="bold", label="Path: /api/*, /health") >> api_task
 
-            # Egress NAT Connections
-            pub_sub_a - Edge(color="#757575", style="dotted") - igw
-            pub_sub_b - Edge(color="#757575", style="dotted") - igw
-            priv_sub_a >> Edge(color="#757575", style="dotted") >> nat_a >> Edge(color="#757575", style="dotted") >> igw
-            priv_sub_b >> Edge(color="#757575", style="dotted") >> nat_b >> Edge(color="#757575", style="dotted") >> igw
+            # 2. API queries to Stateful EC2
+            api_task >> Edge(color="#8E24AA", style="dashed", label="Cache Check (:6379)") >> redis
+            api_task >> Edge(color="#8E24AA", style="dashed", label="Read Miss / Query (:5432)") >> postgres
+            api_task >> Edge(color="#E65100", style="bold", label="Publish Post (:5672)") >> rabbitmq
 
-        # Secrets & Logging
-        ssm_secrets - Edge(color="#F57C00", style="dashed", label="Secret Injection") - api_task
-        ssm_secrets - Edge(color="#F57C00", style="dashed", label="Secret Injection") - postgres_task
-        ssm_secrets - Edge(color="#F57C00", style="dashed", label="Secret Injection") - rabbitmq_task
+            # 3. Worker queue consumer pipeline
+            rabbitmq >> Edge(color="#2E7D32", style="bold", label="Consume Message") >> worker_task
+            worker_task >> Edge(color="#2E7D32", style="bold", label="Insert Record (:5432)") >> postgres
+            worker_task >> Edge(color="#2E7D32", style="dashed", label="Invalidate Cache (:6379)") >> redis
 
-        exec_role - Edge(color="#0288D1", style="dotted") - frontend_task
-        exec_role - Edge(color="#0288D1", style="dotted") - api_task
+            # 4. Storage Persistence on EC2
+            postgres - Edge(color="#D81B60", style="bold", label="Data Volume") - ebs_disk
+
+            # 5. Outbound Internet via NAT for Image Pulls & Package Updates
+            nat_a >> igw
+            nat_b >> igw
+
+        # 6. IAM, Secrets, and Monitoring
+        ssm_secrets >> Edge(color="#FB8C00", style="dotted", label="Inject PGPASSWORD & RABBITMQ_*") >> api_task
+        ssm_secrets >> Edge(color="#FB8C00", style="dotted") >> worker_task
+        exec_role >> Edge(color="#546E7A", style="dotted") >> frontend_task
+        exec_role >> Edge(color="#546E7A", style="dotted") >> api_task
         
         frontend_task >> Edge(color="#9E9E9E", style="dotted") >> cw_logs
         api_task >> Edge(color="#9E9E9E", style="dotted") >> cw_logs
-        postgres_task >> Edge(color="#9E9E9E", style="dotted") >> cw_logs
+        worker_task >> Edge(color="#9E9E9E", style="dotted") >> cw_logs
 
-print("Diagram generated successfully as 'aws_order_platform_infrastructure.png'!")
+print("Architecture diagram generated successfully as 'order_platform_architecture.png'!")
