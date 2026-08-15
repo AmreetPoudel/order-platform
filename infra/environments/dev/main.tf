@@ -107,4 +107,6 @@ module "ecs" {
   dockerhub_secret_arn       = module.dockerhub_secret.secret_arn
   ssm_parameter_path_prefix  = "/order-platform/"
   cluster_name               = "order-platform-cluster"
+  container_port             = 80
+
 }
