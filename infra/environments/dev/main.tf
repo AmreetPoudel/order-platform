@@ -91,21 +91,20 @@ module "ALB" {
   order_platform_alb_sg_id = [module.SG.order_platform_alb_sg_id]
 }
 
-# module "aws_ecs_cluster"{
-#   source= "../../../modules/ecs_cluster"
-#   cluster_name = "order_platform_ecs_cluster"
-# }
+module "dockerhub_secret" {
+  source            = "../../../modules/dockerhub_secret"
+  ssm_username_path = "/order-platform/dockerhub-username"
+  ssm_token_path    = "/order-platform/dockerhub-token"
+  secret_name       = "order-platform/dockerhub-credentials"
+}
 
-# module "dockerhub_secret" {
-#   source             = "../../../modules/dockerhub_secret"
-#   ssm_username_path  = "/order-platform/dockerhub-username"
-#   ssm_token_path     = "/order-platform/dockerhub-token"
-#   secret_name        = "order-platform/dockerhub-credentials"
-# }
-
-# module "ecs_task_execution_role" {
-#   source                     = "../../../modules/ecs_task_execution_role"
-#   name_prefix                = "order-platform"
-#   dockerhub_secret_arn       = module.dockerhub_secret.secret_arn
-#   ssm_parameter_path_prefix  = "/order-platform/"
-# }
+module "ecs" {
+  source                     = "../../../modules/ecs"
+  vpc_id                     = module.VPC.order_platform_vpc_id
+  alb_sg_id                  = module.SG.order_platform_alb_sg_id
+  alb_arn                    = module.ALB.alb_arn
+  private_subnet_ids         = [module.private_subnet_a.order_platform_private_subnet_id, module.private_subnet_b.order_platform_private_subnet_id]
+  dockerhub_secret_arn       = module.dockerhub_secret.secret_arn
+  ssm_parameter_path_prefix  = "/order-platform/"
+  cluster_name               = "order-platform-cluster"
+}
